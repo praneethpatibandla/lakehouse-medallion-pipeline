@@ -2,8 +2,8 @@
 
 An end-to-end batch data pipeline for e-commerce orders, built with **PySpark**
 and **Delta Lake** using the medallion (bronze / silver / gold) architecture.
-It runs entirely on a laptop, and the same code structure maps onto Azure
-Databricks.
+It runs entirely on a laptop, and a later phase runs the same pipeline on
+Databricks (Free Edition) with Unity Catalog.
 
 > Work in progress. See [ROADMAP.md](ROADMAP.md) for what is done and what is next.
 

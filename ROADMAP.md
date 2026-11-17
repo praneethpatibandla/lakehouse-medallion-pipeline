@@ -32,4 +32,16 @@ was added and why.
 - [ ] 17. End-to-end pipeline runner with incremental watermarks
 - [ ] 18. Unit tests with a local Spark session
 - [ ] 19. GitHub Actions CI: lint and tests
-- [ ] 20. Architecture diagram, final README and notes on running it on Azure Databricks
+## Phase 6 - Databricks
+Runs the same pipeline on Databricks Free Edition (serverless compute, Unity
+Catalog). Notebooks live in `databricks/` as `.py` source files so they can be
+pulled into a workspace with a Git folder. They reuse the logic in
+`src/lakehouse/` instead of copying it. Source files are uploaded to a Unity
+Catalog volume, and tables are created as managed tables using the
+`catalog.schema.table` three-level namespace.
+- [ ] 20. Databricks setup notebook (catalog, schemas, volume) and bronze + silver notebooks
+- [ ] 21. Gold notebook and SQL analysis queries on the gold tables
+- [ ] 22. Databricks job definition that runs the notebooks in order on a schedule
+
+## Phase 7 - Wrap-up
+- [ ] 23. Architecture diagram and final README covering both local and Databricks runs
