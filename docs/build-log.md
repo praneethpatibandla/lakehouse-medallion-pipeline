@@ -15,3 +15,25 @@ added a `.gitignore`, and wrote the roadmap.
   a common cause of "works on my machine" failures.
 - `data/` is ignored by git. Data is generated at runtime; committing data
   files bloats a repository and is rarely acceptable in a real team.
+
+## 02. Central configuration and logging
+
+**What:** Added `src/lakehouse/utils/config.py` (all paths and settings in one
+frozen dataclass, overridable with environment variables),
+`src/lakehouse/utils/logger.py` (one shared log format), and tests for both.
+
+**Why:**
+- No module hard-codes a path. To move the pipeline from a laptop to cloud
+  storage you change `LAKEHOUSE_DATA_ROOT`, not the code. This is the
+  "config separate from code" principle.
+- The dataclass is `frozen`, so settings cannot be changed halfway through a
+  run by accident.
+- Invalid settings fail immediately with a clear message, instead of failing
+  twenty minutes into a Spark job.
+- A consistent log format (`time | level | module | message`) makes failed runs
+  quick to diagnose.
+
+**Try it:**
+```bash
+pytest tests/test_config.py -v
+```
