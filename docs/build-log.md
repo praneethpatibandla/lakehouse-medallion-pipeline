@@ -69,3 +69,45 @@ PYTHONPATH=src python -m data_generator.reference_data --customers 500 --product
 head -3 data/landing/customers/customers.csv
 pytest tests/test_reference_data.py -v
 ```
+
+## 04. Synthetic data generator: orders and order items in daily batches
+
+**What:** Added `data_generator/orders.py`, which writes one folder per day:
+orders as JSON lines (`data/landing/orders/batch_date=YYYY-MM-DD/orders.json`)
+and order items as CSV (`data/landing/order_items/batch_date=YYYY-MM-DD/order_items.csv`).
+About 5% of orders get one deliberate defect. Tests are in
+`tests/test_orders_generator.py`.
+
+**Why:**
+- **Daily batches** are how most batch pipelines receive data: a source system
+  exports one drop per day. One folder per `batch_date` lets the pipeline load
+  only new days (incremental loads, step 17) and lets you re-run a single day
+  without touching the others. The `key=value` folder name is the Hive
+  partition convention that Spark understands automatically.
+- **Two formats** (JSON and CSV) on purpose: ingestion code in a real job has
+  to handle more than one, and each format fails in different ways.
+- **Header and line tables** (orders vs order items) is the normal shape of
+  transactional data. Joining them correctly is what the gold fact table does.
+- **The unit price is copied onto each order item.** If the catalogue price
+  changes later, past orders must still show the price the customer paid.
+- **Dirty records** are what the later layers exist to handle. Each defect maps
+  to a technique you will see in the pipeline:
+  - duplicate (a later copy with a newer `updated_at`) -> deduplicate and keep
+    the latest version, then Delta MERGE (step 09)
+  - corrupt JSON line -> quarantine instead of failing the whole load (step 07)
+  - null or unknown `customer_id`, zero or negative quantity -> data quality
+    rules (steps 08 and 16)
+  - `18/11/2026 14:05` style timestamps and `"  Shipped "` statuses ->
+    cleaning and standardisation (step 08)
+- The random generator is seeded with the seed **and** the date, so every day
+  is different but re-running a day produces exactly the same file. Re-running
+  is safe because writing a date replaces that date's folder content.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.reference_data
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3 --orders-per-day 200
+head -3 data/landing/orders/batch_date=2026-11-01/orders.json
+pytest tests/test_orders_generator.py -v
+```
+The log line for each day shows how many of each defect were injected.

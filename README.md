@@ -55,6 +55,9 @@ from the repository root:
 ```bash
 # customers and products (reference data)
 PYTHONPATH=src python -m data_generator.reference_data --customers 500 --products 100
+
+# orders and order items, one folder per day, ~5% deliberately dirty records
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3 --orders-per-day 200
 ```
 
 ## Run the tests
