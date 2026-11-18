@@ -37,3 +37,35 @@ frozen dataclass, overridable with environment variables),
 ```bash
 pytest tests/test_config.py -v
 ```
+
+## 03. Synthetic data generator: customers and products
+
+**What:** Added `data_generator/reference_data.py`, which creates customers and
+products and writes them as CSV files into the landing zone
+(`data/landing/customers/customers.csv` and `data/landing/products/products.csv`),
+plus tests in `tests/test_reference_data.py`.
+
+**Why:**
+- Customers and products are *reference* (master) data: small tables that
+  orders point at. They are generated first so every order created in the next
+  step can reference IDs that really exist.
+- Everything is driven by a seed. Running the generator twice gives identical
+  files, so a bug found in the pipeline can be reproduced with the same input.
+- Prices are written as strings with exactly two decimals. Money should never
+  be stored as a float, because floats cannot represent most cents exactly;
+  later the silver layer will cast these to `DECIMAL(10,2)`.
+- City and state are picked as a pair, so the data is internally consistent.
+  Unrealistic random data hides bugs that real data would expose.
+- Some products are inactive (discontinued). A real catalogue keeps old
+  products because historical orders still reference them, and the gold layer
+  needs to handle that.
+- The generator uses only the standard library, so it is fast to test and does
+  not need Spark. Writing to a separate `landing` folder mimics a source system
+  dropping files that the pipeline then picks up.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.reference_data --customers 500 --products 100
+head -3 data/landing/customers/customers.csv
+pytest tests/test_reference_data.py -v
+```

@@ -7,7 +7,7 @@ was added and why.
 ## Phase 1 - Foundations
 - [x] 01. Project structure, dependencies and roadmap
 - [x] 02. Central configuration and logging
-- [ ] 03. Synthetic data generator: customers and products
+- [x] 03. Synthetic data generator: customers and products
 - [ ] 04. Synthetic data generator: orders and order items in daily batches, with deliberately dirty records
 - [ ] 05. Spark session factory configured for Delta Lake
 

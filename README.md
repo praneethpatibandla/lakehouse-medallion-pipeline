@@ -46,3 +46,19 @@ python -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+## Generate sample data
+
+The pipeline reads synthetic source files from `data/landing/`. Create them
+from the repository root:
+
+```bash
+# customers and products (reference data)
+PYTHONPATH=src python -m data_generator.reference_data --customers 500 --products 100
+```
+
+## Run the tests
+
+```bash
+pytest -q
+```
