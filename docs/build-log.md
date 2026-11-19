@@ -111,3 +111,45 @@ head -3 data/landing/orders/batch_date=2026-11-01/orders.json
 pytest tests/test_orders_generator.py -v
 ```
 The log line for each day shows how many of each defect were injected.
+
+## 05. Spark session factory configured for Delta Lake
+
+**What:** Added `src/lakehouse/utils/spark.py` with `get_spark()`, the one place
+every job gets its SparkSession from, plus `build_spark_conf()` (the settings
+as a plain dict) and a small smoke test you can run from the command line.
+Tests are in `tests/test_spark_session.py`.
+
+**Why:**
+- **Delta needs two settings** on the session: the SQL extension (adds `MERGE`,
+  `OPTIMIZE`, `VACUUM`, `DESCRIBE HISTORY`) and the Delta catalog. Without them
+  `format("delta")` writes still partly work, but SQL commands fail with
+  confusing errors. Putting them in one factory means no job can forget them.
+- **`configure_spark_with_delta_pip`** adds the Delta jars that match the
+  installed `delta-spark` package. This is why step 01 pinned
+  `pyspark==3.5.3` with `delta-spark==3.2.1`: a mismatched pair fails at
+  start-up with class-not-found errors.
+- **Shuffle partitions come from config** (default 4). Spark's default of 200
+  is sized for clusters; on a laptop with a few MB of data it creates hundreds
+  of tiny tasks and tiny files, which is slow and is the "small files problem"
+  you will see again in step 15.
+- **UTC session time zone** so timestamps mean the same thing on every machine.
+  A pipeline whose output depends on the laptop's time zone is a bug waiting
+  to happen.
+- **Databricks detection.** On Databricks a session already exists, Delta is
+  built in, and serverless compute rejects most session settings. When the
+  `DATABRICKS_RUNTIME_VERSION` environment variable is present, `get_spark()`
+  simply returns the existing session, so the same job code runs in both
+  places (used in Phase 6).
+- **pyspark is imported inside the function.** Pure-Python modules and tests
+  can import this file without pyspark installed; only code that really needs
+  Spark pays the start-up cost. `build_spark_conf()` is separate for the same
+  reason: the settings can be unit tested without a JVM.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m lakehouse.utils.spark   # needs Java 11 or 17
+pytest tests/test_spark_session.py -v
+```
+The smoke test writes a three-row Delta table under `data/_smoke_test/` and
+logs its row count and table version. The last test in the file starts a real
+Spark session and is skipped automatically if pyspark is not installed.

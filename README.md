@@ -47,6 +47,12 @@ source .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+Check that Spark and Delta Lake work (the first run downloads the Delta jars):
+
+```bash
+PYTHONPATH=src python -m lakehouse.utils.spark
+```
+
 ## Generate sample data
 
 The pipeline reads synthetic source files from `data/landing/`. Create them

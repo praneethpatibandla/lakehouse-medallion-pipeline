@@ -9,7 +9,7 @@ was added and why.
 - [x] 02. Central configuration and logging
 - [x] 03. Synthetic data generator: customers and products
 - [x] 04. Synthetic data generator: orders and order items in daily batches, with deliberately dirty records
-- [ ] 05. Spark session factory configured for Delta Lake
+- [x] 05. Spark session factory configured for Delta Lake
 
 ## Phase 2 - Bronze (raw)
 - [ ] 06. Explicit schemas and raw ingestion into Delta with load metadata columns
