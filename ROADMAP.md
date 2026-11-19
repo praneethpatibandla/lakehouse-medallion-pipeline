@@ -12,7 +12,7 @@ was added and why.
 - [x] 05. Spark session factory configured for Delta Lake
 
 ## Phase 2 - Bronze (raw)
-- [ ] 06. Explicit schemas and raw ingestion into Delta with load metadata columns
+- [x] 06. Explicit schemas and raw ingestion into Delta with load metadata columns
 - [ ] 07. Corrupt-record quarantine and ingestion audit log
 
 ## Phase 3 - Silver (clean)

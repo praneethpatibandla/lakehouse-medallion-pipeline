@@ -66,6 +66,15 @@ PYTHONPATH=src python -m data_generator.reference_data --customers 500 --product
 PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3 --orders-per-day 200
 ```
 
+## Load bronze
+
+Load one day of landing files into bronze Delta tables under `data/bronze/`.
+Re-running a day replaces that day instead of duplicating it.
+
+```bash
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
+```
+
 ## Run the tests
 
 ```bash

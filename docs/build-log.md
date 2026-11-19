@@ -153,3 +153,62 @@ pytest tests/test_spark_session.py -v
 The smoke test writes a three-row Delta table under `data/_smoke_test/` and
 logs its row count and table version. The last test in the file starts a real
 Spark session and is skipped automatically if pyspark is not installed.
+
+## 06. Explicit schemas and raw ingestion into Delta with load metadata
+
+**What:** Added `src/lakehouse/bronze/schemas.py` (the column list of every
+source and an all-string Spark schema) and `src/lakehouse/bronze/ingest.py`,
+which reads one batch date from the landing zone, adds load metadata columns
+and writes it into a bronze Delta table partitioned by `_batch_date`. Tests
+are in `tests/test_bronze_ingest.py`.
+
+**Why:**
+- **Explicit schema instead of `inferSchema`.** Inference reads the data an
+  extra time, and its answer can change from one file to the next (a column
+  that was an integer yesterday becomes a string today because of one bad
+  value). A fixed schema makes bronze predictable.
+- **Every column is a string in bronze.** Bronze is "data as received". If
+  bronze cast `order_ts` to a timestamp, the value `18/11/2026 14:05` would
+  silently become NULL and the original text would be gone. Casting is done in
+  silver (step 08), where failures can be counted and handled.
+- **`enforceSchema=false` for CSV** makes Spark check the header against the
+  schema. If the source system renames or reorders a column, the load fails
+  loudly instead of putting values in the wrong columns.
+- **Load metadata columns** (`_source_file`, `_ingested_at`, `_batch_date`,
+  `_run_id`) answer "where did this row come from and when?" — the first
+  question in any data incident. The underscore prefix marks them as pipeline
+  columns, and a test checks they never clash with source columns.
+- **`_metadata.file_path` instead of `input_file_name()`.** Both give the
+  source file, but Unity Catalog on Databricks does not support
+  `input_file_name()`, so this keeps the code portable to Phase 6.
+- **Idempotent reruns with `replaceWhere`.** A plain append would double the
+  rows if a day is loaded twice; a plain overwrite would delete every other
+  day. `mode("overwrite")` plus `replaceWhere _batch_date = '<day>'` replaces
+  just that day's partition in one atomic Delta transaction, so re-running a
+  failed or corrected day is always safe.
+- **Reference data is stored as daily snapshots.** Customers and products
+  arrive as one full file. Each load keeps that day's snapshot as its own
+  partition, so silver can compare snapshots to detect changes for the SCD
+  Type 2 customer dimension (step 10).
+- **Contract test.** `test_schemas_match_generator_output` fails if the data
+  generator and the bronze schema drift apart, the local version of a data
+  contract between a producer and a consumer.
+- **Known gap:** corrupt JSON lines currently load as all-NULL rows. Step 07
+  keeps their raw text and moves them to a quarantine table.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.reference_data
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 2
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01   # same counts: idempotent
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-02
+pytest tests/test_bronze_ingest.py -v
+```
+To look at the result in a PySpark shell:
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.read.format("delta").load("data/bronze/orders").groupBy("_batch_date").count().show()
+spark.sql("DESCRIBE HISTORY delta.`data/bronze/orders`").select("version", "operation").show()
+```
