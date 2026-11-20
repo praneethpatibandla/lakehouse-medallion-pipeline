@@ -212,3 +212,65 @@ spark = get_spark()
 spark.read.format("delta").load("data/bronze/orders").groupBy("_batch_date").count().show()
 spark.sql("DESCRIBE HISTORY delta.`data/bronze/orders`").select("version", "operation").show()
 ```
+
+## 07. Corrupt-record quarantine and ingestion audit log
+
+**What:** Bronze ingestion now separates unparseable records from good ones.
+Bad lines are written with their raw text to a quarantine Delta table
+(`data/quarantine/<source>/`), and every load appends a row to an audit Delta
+table (`data/audit/ingestion_log/`). New code is in
+`src/lakehouse/bronze/audit.py`; `ingest.py` gained `split_corrupt()` and a
+`--max-quarantine-ratio` option. Tests are in `tests/test_bronze_audit.py`.
+
+**Why:**
+- **Don't silently drop, don't silently load.** Before this step a truncated
+  JSON line became a row of NULLs in bronze. Reading with
+  `columnNameOfCorruptRecord` keeps the original text in `_corrupt_record`, so
+  the bad line can be inspected, reported to the source team, fixed and
+  replayed. This is the "dead-letter queue" idea from streaming, applied to
+  batch files.
+- **Quarantine, check, then publish.** Corrupt rows are written first and
+  counted, then `check_quarantine_threshold()` decides whether the batch is
+  trustworthy. A few bad lines are normal; a file that is 30% garbage usually
+  means a broken export, and loading the 70% that parsed would publish an
+  incomplete day that looks complete. If the limit is exceeded the run fails
+  *before* bronze is touched, so downstream layers never see a half-good day.
+- **Audit log as a Delta table, append-only.** Each load records run id,
+  source, batch date, rows read / loaded / quarantined, status, error and
+  duration. Operational questions ("did yesterday load? are bad rows
+  increasing?") become a SQL query instead of digging through logs. Failed
+  runs are logged too, which is exactly when you need the record most.
+  Appending (never overwriting) keeps the full history of reruns.
+- **Reconciliation.** `rows_read = rows_loaded + rows_quarantined` is checked
+  and a warning is logged if it does not hold. Row-count reconciliation
+  between stages is one of the cheapest and most useful data quality checks.
+- **Quarantine is idempotent too.** It uses the same `replaceWhere` partition
+  overwrite as bronze (the function was renamed to `write_partition`), so a
+  rerun clears the previous run's quarantined rows for that day, even when the
+  new run has none.
+- **A Spark gotcha handled on purpose.** Spark refuses queries on raw JSON/CSV
+  that select *only* the corrupt-record column. The quarantine table keeps all
+  columns (the source columns are just NULL), which avoids the error without
+  `.cache()` — caching is not available on Databricks serverless compute,
+  which Phase 6 uses.
+- **Pure-Python audit record.** `AuditRecord` and the threshold check need no
+  Spark, so their rules are unit tested in milliseconds; only the final write
+  uses Spark.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 1
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
+pytest tests/test_bronze_audit.py -v
+```
+Inspect the results in a PySpark shell:
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.read.format("delta").load("data/quarantine/orders").select("_batch_date", "_corrupt_record").show(truncate=False)
+spark.read.format("delta").load("data/audit/ingestion_log").orderBy("started_at") \
+    .select("source", "batch_date", "status", "rows_read", "rows_loaded", "rows_quarantined").show()
+```
+To see the threshold stop a load, run with `--max-quarantine-ratio 0` on a day
+that has at least one corrupt line: the command fails, bronze is unchanged,
+and a `failed` row appears in the audit log.

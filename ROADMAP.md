@@ -13,7 +13,7 @@ was added and why.
 
 ## Phase 2 - Bronze (raw)
 - [x] 06. Explicit schemas and raw ingestion into Delta with load metadata columns
-- [ ] 07. Corrupt-record quarantine and ingestion audit log
+- [x] 07. Corrupt-record quarantine and ingestion audit log
 
 ## Phase 3 - Silver (clean)
 - [ ] 08. Cleaning and standardisation transforms as pure functions

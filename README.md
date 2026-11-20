@@ -75,6 +75,11 @@ Re-running a day replaces that day instead of duplicating it.
 PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
 ```
 
+Lines that cannot be parsed go to `data/quarantine/<source>/` with their raw
+text, and every load is recorded in the audit table `data/audit/ingestion_log/`.
+If more than 5% of a batch is corrupt the load stops before bronze is updated
+(change the limit with `--max-quarantine-ratio`).
+
 ## Run the tests
 
 ```bash

@@ -34,11 +34,23 @@ SOURCE_COLUMNS: dict[str, tuple[str, ...]] = {
 }
 
 
-def spark_schema(source: str) -> "StructType":
-    """Return the all-string Spark schema for a source, e.g. spark_schema("orders")."""
+# Spark fills this column with the raw text of any line it could not parse
+# (PERMISSIVE mode). It must be part of the read schema for Spark to keep it.
+CORRUPT_RECORD_COLUMN = "_corrupt_record"
+
+
+def spark_schema(source: str, with_corrupt_column: bool = False) -> "StructType":
+    """Return the all-string Spark schema for a source, e.g. spark_schema("orders").
+
+    With `with_corrupt_column=True` the schema ends with `_corrupt_record`, so
+    unparseable lines keep their original text instead of becoming NULL rows.
+    """
     from pyspark.sql.types import StringType, StructField, StructType
 
     if source not in SOURCE_COLUMNS:
         raise ValueError(f"Unknown source '{source}'. Expected one of: {sorted(SOURCE_COLUMNS)}")
+    columns = list(SOURCE_COLUMNS[source])
+    if with_corrupt_column:
+        columns.append(CORRUPT_RECORD_COLUMN)
     # nullable=True: bronze must accept whatever arrives, including missing values.
-    return StructType([StructField(name, StringType(), True) for name in SOURCE_COLUMNS[source]])
+    return StructType([StructField(name, StringType(), True) for name in columns])

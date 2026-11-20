@@ -32,6 +32,7 @@ def test_table_path(monkeypatch, tmp_path):
     monkeypatch.setenv("LAKEHOUSE_DATA_ROOT", str(tmp_path))
     config = load_config()
     assert Path(config.table_path("silver", "orders")) == tmp_path / "silver" / "orders"
+    assert Path(config.table_path("audit", "ingestion_log")) == tmp_path / "audit" / "ingestion_log"
     with pytest.raises(ValueError):
         config.table_path("platinum", "orders")
 

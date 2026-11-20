@@ -47,6 +47,11 @@ class PipelineConfig:
     def quarantine_path(self) -> Path:
         return self.data_root / "quarantine"
 
+    # --- pipeline bookkeeping: ingestion audit log, later run state ---
+    @property
+    def audit_path(self) -> Path:
+        return self.data_root / "audit"
+
     def table_path(self, layer: str, table: str) -> str:
         """Return the storage path of a table, e.g. table_path("bronze", "orders")."""
         layers = {
@@ -55,6 +60,7 @@ class PipelineConfig:
             "silver": self.silver_path,
             "gold": self.gold_path,
             "quarantine": self.quarantine_path,
+            "audit": self.audit_path,
         }
         if layer not in layers:
             raise ValueError(f"Unknown layer '{layer}'. Expected one of: {sorted(layers)}")
