@@ -16,7 +16,7 @@ was added and why.
 - [x] 07. Corrupt-record quarantine and ingestion audit log
 
 ## Phase 3 - Silver (clean)
-- [ ] 08. Cleaning and standardisation transforms as pure functions
+- [x] 08. Cleaning and standardisation transforms as pure functions
 - [ ] 09. Deduplication and incremental upserts for orders with Delta MERGE
 - [ ] 10. Slowly changing dimension (Type 2) for customers
 - [ ] 11. Conformed products and order items

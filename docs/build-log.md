@@ -274,3 +274,63 @@ spark.read.format("delta").load("data/audit/ingestion_log").orderBy("started_at"
 To see the threshold stop a load, run with `--max-quarantine-ratio 0` on a day
 that has at least one corrupt line: the command fails, bronze is unchanged,
 and a `failed` row appears in the audit log.
+
+## 08. Cleaning and standardisation transforms as pure functions
+
+**What:** Added `src/lakehouse/silver/transforms.py`: small, side-effect-free
+functions that turn an all-string bronze DataFrame into a typed, tidy one —
+`clean_string`, `parse_timestamp`, `safe_cast`, `cast_columns`,
+`standardize_case`, `add_dq_issues` — and one composed cleaner per source
+(`clean_orders`, `clean_order_items`, `clean_customers`, `clean_products`).
+Tests are in `tests/test_silver_transforms.py`. Nothing writes to silver yet;
+the silver jobs in steps 09-11 apply these with `df.transform(clean_orders)`.
+
+**Why:**
+- **Pure functions (DataFrame in, DataFrame out).** No reads, writes or
+  global state, so each rule can be tested with a two-row DataFrame built in
+  the test, and the same code runs unchanged locally and on Databricks.
+  `DataFrame.transform` lets jobs chain them in a readable pipeline.
+- **Casting happens here, not in bronze.** Bronze kept everything as text
+  (step 06). Silver converts to real types: timestamps, `DATE`, `INT`,
+  `BOOLEAN`, and `DECIMAL(10,2)` for money (never `DOUBLE`, which cannot store
+  most cents exactly).
+- **`try_cast` / `try_to_timestamp` instead of `cast` / `to_timestamp`.** With
+  ANSI SQL mode on — the default on Databricks serverless — a plain cast
+  raises an error on the first bad value and the whole job fails. The `try_`
+  versions return NULL, so one bad row does not stop the batch.
+- **Multiple timestamp formats.** The source sometimes sends `18/11/2026
+  14:05` instead of ISO-8601. `parse_timestamp` tries each known layout in
+  order with `coalesce`, so known variants are rescued and only truly
+  unparseable values become NULL.
+- **Flag, don't drop: the `_dq_issues` column.** Each row gets an array of the
+  rules it broke (`invalid_order_ts`, `missing_customer_id`, `unknown_status`,
+  `non_positive_quantity`, ...). An empty array means clean. A NULL created by
+  a failed cast is flagged as `invalid_<column>`, so it can be told apart from
+  a value that was missing in the source. Whether to drop, fix or keep a
+  flagged row is decided by the job that uses it, and the issues are easy to
+  count: `explode(_dq_issues)` then `groupBy`.
+- **Standardisation.** Strings are trimmed and empty strings become NULL, so
+  one `isNull()` check catches every kind of "missing". Codes are given one
+  case (`"  Shipped "` becomes `shipped`, `usd` becomes `USD`) so joins and
+  group-bys don't split the same value into several.
+- **Declarative types.** `TARGET_TYPES` lists the type of each column in one
+  dictionary. A test checks it only names real source columns, and another
+  checks the allowed order statuses match the source system's list, so the
+  cleaning rules can't drift away from the data they clean.
+- **Pipeline metadata is untouched.** Underscore columns (`_batch_date`,
+  `_run_id`, ...) are passed through as is, keeping lineage back to bronze.
+
+**Try it:**
+```bash
+pytest tests/test_silver_transforms.py -v
+```
+Clean a day of bronze orders in a PySpark shell (after running steps 06-07):
+```python
+from pyspark.sql import functions as F
+from lakehouse.utils.spark import get_spark
+from lakehouse.silver.transforms import clean_orders
+spark = get_spark()
+orders = spark.read.format("delta").load("data/bronze/orders").transform(clean_orders)
+orders.printSchema()
+orders.select(F.explode("_dq_issues").alias("issue")).groupBy("issue").count().show()
+```
