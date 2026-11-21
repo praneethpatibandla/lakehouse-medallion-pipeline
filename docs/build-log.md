@@ -334,3 +334,72 @@ orders = spark.read.format("delta").load("data/bronze/orders").transform(clean_o
 orders.printSchema()
 orders.select(F.explode("_dq_issues").alias("issue")).groupBy("issue").count().show()
 ```
+
+## 09. Deduplication and incremental upserts for orders with Delta MERGE
+
+**What:** Added the first silver job, `src/lakehouse/silver/orders.py`, and the
+shared helpers it uses in `src/lakehouse/silver/merge.py`. For one batch date
+the job reads that day's bronze partition, cleans it with `clean_orders`
+(step 08), drops rows without an `order_id`, keeps the newest copy of each
+order and MERGEs the result into the Delta table `data/silver/orders/`. Tests
+are in `tests/test_silver_merge.py`.
+
+**Why:**
+- **Incremental, not full reload.** Each run processes only one new bronze
+  partition and merges it into silver. Rebuilding silver from all of bronze
+  every day gets slower as history grows; an upsert costs roughly the size of
+  the new batch.
+- **MERGE = insert new, update existing, in one atomic commit.** A new
+  `order_id` is inserted; a known one is updated. Delta writes the whole
+  MERGE as one transaction, so a failed run leaves the table as it was.
+- **Deduplicate before merging.** The source re-sends an order when its status
+  changes, so one batch can hold several copies of the same order. Delta
+  refuses a MERGE where two source rows match one target row ("multiple
+  source rows matched"), because it cannot know which should win.
+  `deduplicate_latest` uses `row_number()` over a window partitioned by the
+  key and ordered by `updated_at` (newest first, NULLs last), with
+  `_ingested_at` as the tie-breaker. It runs *after* casting: compared as
+  strings, `18/11/2026 14:05` would sort after `2026-11-19T...` and the wrong
+  copy would win.
+- **Out-of-order protection.** The update only happens when
+  `s.updated_at >= t.updated_at`. If Monday's batch is replayed after
+  Tuesday's, Monday's older "placed" status cannot overwrite Tuesday's
+  "shipped". `>=` (not `>`) still lets a rerun of the same day go through, so
+  reruns stay idempotent: same input, same table.
+- **Rows without a key are skipped and logged.** A row with no `order_id`
+  can never be matched or updated later, so it is counted and reported
+  instead of being inserted as an orphan. Other data quality problems are
+  kept and flagged in `_dq_issues` (step 08); gold decides what to exclude.
+- **One code path for the first and later runs.**
+  `DeltaTable.createIfNotExists` creates an empty table with the right schema,
+  then the same MERGE runs every time. No special "first load" branch to
+  test separately.
+- **Metrics from the transaction log.** After the MERGE, Delta's
+  `operationMetrics` (rows inserted / updated) are read from the table
+  history and logged, so each run reports what it changed without an extra
+  count query.
+- **Reusable helpers.** `merge_condition`, `newer_condition` and
+  `parse_merge_metrics` are plain Python and unit tested without Spark;
+  customers, products and order items (steps 10-11) reuse the same pieces.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.reference_data
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 2
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-02
+PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-02
+# run day 1 again: 0 inserted, the log shows the rows were only refreshed
+PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-01
+pytest tests/test_silver_merge.py -v
+```
+Check that every order appears once, and look at the MERGE history:
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+orders = spark.read.format("delta").load("data/silver/orders")
+orders.groupBy("order_id").count().where("count > 1").show()   # expect no rows
+spark.sql("DESCRIBE HISTORY delta.`data/silver/orders`") \
+    .select("version", "operation", "operationMetrics").show(truncate=False)
+```

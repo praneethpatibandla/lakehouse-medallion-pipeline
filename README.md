@@ -80,6 +80,17 @@ text, and every load is recorded in the audit table `data/audit/ingestion_log/`.
 If more than 5% of a batch is corrupt the load stops before bronze is updated
 (change the limit with `--max-quarantine-ratio`).
 
+## Build silver
+
+Merge one day of bronze orders into the silver table `data/silver/orders/`.
+Duplicate copies of an order are collapsed to the newest one, new orders are
+inserted and changed orders are updated (Delta `MERGE`). Re-running a day, or
+running an older day late, never makes the data older or duplicated.
+
+```bash
+PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-01
+```
+
 ## Run the tests
 
 ```bash
