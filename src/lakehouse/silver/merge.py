@@ -130,16 +130,30 @@ def upsert(spark: "SparkSession", df: "DataFrame", path: str, keys: Sequence[str
              .location(path)
              .addColumns(df.schema)
              .execute())
+    version_before = current_version(table)
     update_when = newer_condition(sequence_column) if sequence_column else None
     (table.alias(TARGET_ALIAS)
           .merge(df.alias(SOURCE_ALIAS), merge_condition(keys))
           .whenMatchedUpdateAll(condition=update_when)
           .whenNotMatchedInsertAll()
           .execute())
-    return last_operation_stats(table)
+    return last_operation_stats(table, version_before)
 
 
-def last_operation_stats(table) -> MergeStats:
-    """Read the row counts of the latest commit from the Delta transaction log."""
-    latest = table.history(1).select("operationMetrics").first()
-    return parse_merge_metrics(latest["operationMetrics"] if latest else None)
+def current_version(table) -> int | None:
+    """Return the table's latest commit version (None for a table with no commits)."""
+    latest = table.history(1).select("version").first()
+    return latest["version"] if latest else None
+
+
+def last_operation_stats(table, version_before: int | None = None) -> MergeStats:
+    """Read the row counts of the latest commit from the Delta transaction log.
+
+    If no new commit was made since `version_before` (a MERGE with nothing to
+    change may not commit), zero counts are returned instead of the metrics
+    of some older operation.
+    """
+    latest = table.history(1).select("version", "operationMetrics").first()
+    if latest is None or (version_before is not None and latest["version"] == version_before):
+        return MergeStats(source_rows=0, inserted=0, updated=0)
+    return parse_merge_metrics(latest["operationMetrics"])

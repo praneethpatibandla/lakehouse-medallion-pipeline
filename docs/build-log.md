@@ -403,3 +403,82 @@ orders.groupBy("order_id").count().where("count > 1").show()   # expect no rows
 spark.sql("DESCRIBE HISTORY delta.`data/silver/orders`") \
     .select("version", "operation", "operationMetrics").show(truncate=False)
 ```
+
+## 10. Slowly changing dimension (Type 2) for customers
+
+**What:** Added `src/lakehouse/silver/customers.py`. Each daily customers
+snapshot from bronze is cleaned, deduplicated and applied to
+`data/silver/customers/` as a Type 2 slowly changing dimension: when a
+customer's attributes change, the old row is closed and a new version is
+added. Rows carry `valid_from`, `valid_to`, `is_current` and `_row_hash`.
+Tests are in `tests/test_silver_customers.py`. `merge.py` also gained
+`current_version()`, so a MERGE that changes nothing reports zero rows instead
+of the counts of an older commit.
+
+**Why:**
+- **Type 1 vs Type 2.** Type 1 overwrites the old value: simple, but history
+  is lost, so "sales by customer city" would move a customer's past orders to
+  their new city. Type 2 keeps every version with a validity range, so gold
+  can join each order to the version that was valid on the order date
+  (`order_date >= valid_from AND (valid_to IS NULL OR order_date < valid_to)`).
+- **Change detection with a hash.** `_row_hash` is a SHA-256 of the tracked
+  attributes. Comparing one column is simpler and cheaper than comparing
+  every attribute with NULL-safe equality. NULLs are replaced by a token
+  before hashing, because `concat_ws` skips NULLs and `("a", NULL, "b")`
+  would otherwise look the same as `("a", "b", NULL)`.
+- **Hash cleaned values, track only business attributes.** The hash is built
+  after `clean_customers`, so `" alan "` vs `Alan` is not a "change". Pipeline
+  columns like `_run_id` are left out of the hash; if they were in it, every
+  load would create a new version of every customer.
+- **One atomic MERGE with the "staged union" trick.** A MERGE can do one
+  action per matched row, but a changed customer needs two: close the old
+  row *and* insert a new one. So a changed customer is staged twice: once
+  with `_merge_key = customer_id` (matches the current row, which is closed)
+  and once with `_merge_key = NULL` (matches nothing, so it is inserted).
+  Both happen in one Delta transaction, so a customer never has zero or two
+  current rows, even if the job crashes.
+- **Idempotent reruns.** Re-applying the same snapshot finds identical hashes
+  and changes nothing.
+- **Forward-only history.** `check_batch_order` refuses a snapshot older than
+  the newest `valid_from` in the table. Applying 1 Nov after 3 Nov would
+  close the 3 Nov versions and make old data look current. Backfilling
+  history means rebuilding the table in date order.
+- **`valid_to` is exclusive.** The closed row's `valid_to` equals the new
+  row's `valid_from`, so ranges never overlap or leave gaps, and a date falls
+  in exactly one version.
+- **Known limitation.** A customer who disappears from the snapshot stays
+  current. Handling deletes (closing the row, or a "deleted" flag) needs a
+  rule agreed with the source team, because a missing row can also mean a
+  broken export.
+
+**Try it:** the generator always writes the same customers, so change one by
+hand to see a new version appear:
+```bash
+PYTHONPATH=src python -m data_generator.reference_data
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01 --tables customers
+PYTHONPATH=src python -m lakehouse.silver.customers --batch-date 2026-11-01
+
+# move customer C00001 to Denver, CO, then load the next day's snapshot
+python - <<'PY'
+import csv
+path = "data/landing/customers/customers.csv"
+rows = list(csv.DictReader(open(path)))
+rows[0].update(city="Denver", state="CO")
+with open(path, "w", newline="") as f:
+    writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+    writer.writeheader()
+    writer.writerows(rows)
+PY
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-02 --tables customers
+PYTHONPATH=src python -m lakehouse.silver.customers --batch-date 2026-11-02
+pytest tests/test_silver_customers.py -v
+```
+Look at the two versions of the customer:
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.read.format("delta").load("data/silver/customers").where("customer_id = 'C00001'") \
+    .select("customer_id", "city", "state", "valid_from", "valid_to", "is_current").show()
+```
+Running `--batch-date 2026-11-01` again now fails on purpose with
+`OutOfOrderBatchError`.

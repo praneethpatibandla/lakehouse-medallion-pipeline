@@ -91,6 +91,15 @@ running an older day late, never makes the data older or duplicated.
 PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-01
 ```
 
+Customers are kept as a Type 2 slowly changing dimension in
+`data/silver/customers/`: a changed customer gets a new version, and the old
+one is closed with `valid_to` and `is_current = false`. Snapshots must be
+applied in date order.
+
+```bash
+PYTHONPATH=src python -m lakehouse.silver.customers --batch-date 2026-11-01
+```
+
 ## Run the tests
 
 ```bash
