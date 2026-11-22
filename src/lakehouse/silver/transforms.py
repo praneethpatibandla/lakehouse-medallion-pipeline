@@ -152,8 +152,12 @@ def _cast_with_failure_rules(df: "DataFrame", types: dict[str, str]) -> "DataFra
     return cast_columns(typed, {})
 
 
-def _append_issues(df: "DataFrame", rules: dict[str, "Column"]) -> "DataFrame":
-    """Add more rule names to an existing `_dq_issues` column."""
+def append_dq_issues(df: "DataFrame", rules: dict[str, "Column"]) -> "DataFrame":
+    """Add more rule names to an existing `_dq_issues` column.
+
+    Used by the cleaners below and by silver jobs that add checks needing
+    other tables (e.g. "unknown product" in order items, step 11).
+    """
     from pyspark.sql import functions as F
 
     df = add_dq_issues(df.withColumnRenamed(DQ_COLUMN, "_dq_previous"), rules)
@@ -171,7 +175,7 @@ def clean_orders(df: "DataFrame") -> "DataFrame":
     out = _cast_with_failure_rules(df, TARGET_TYPES["orders"])
     out = standardize_case(out, lower=("status", "payment_method"),
                            upper=("customer_id", "currency"))
-    return _append_issues(out, {
+    return append_dq_issues(out, {
         "missing_customer_id": F.col("customer_id").isNull(),
         # coalesce: a NULL status is unknown too, not a silent pass.
         "unknown_status": F.coalesce(~F.col("status").isin(*VALID_ORDER_STATUSES), F.lit(True)),
@@ -183,7 +187,7 @@ def clean_order_items(df: "DataFrame") -> "DataFrame":
 
     out = _cast_with_failure_rules(df, TARGET_TYPES["order_items"])
     out = standardize_case(out, upper=("product_id",))
-    return _append_issues(out, {
+    return append_dq_issues(out, {
         "non_positive_quantity": F.col("quantity") <= 0,
         "discount_out_of_range": (F.col("discount_pct") < 0) | (F.col("discount_pct") > 100),
     })
@@ -196,7 +200,7 @@ def clean_customers(df: "DataFrame") -> "DataFrame":
     out = (out.withColumn("first_name", F.initcap("first_name"))
               .withColumn("last_name", F.initcap("last_name")))
     out = standardize_case(out, lower=("segment",), upper=("customer_id", "state", "country"))
-    return _append_issues(out, {"missing_customer_id": F.col("customer_id").isNull()})
+    return append_dq_issues(out, {"missing_customer_id": F.col("customer_id").isNull()})
 
 
 def clean_products(df: "DataFrame") -> "DataFrame":
@@ -204,7 +208,7 @@ def clean_products(df: "DataFrame") -> "DataFrame":
 
     out = _cast_with_failure_rules(df, TARGET_TYPES["products"])
     out = standardize_case(out, lower=("category",), upper=("product_id",))
-    return _append_issues(out, {"non_positive_price": F.col("unit_price") <= 0})
+    return append_dq_issues(out, {"non_positive_price": F.col("unit_price") <= 0})
 
 
 CLEANERS = {

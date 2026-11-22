@@ -19,7 +19,7 @@ was added and why.
 - [x] 08. Cleaning and standardisation transforms as pure functions
 - [x] 09. Deduplication and incremental upserts for orders with Delta MERGE
 - [x] 10. Slowly changing dimension (Type 2) for customers
-- [ ] 11. Conformed products and order items
+- [x] 11. Conformed products and order items
 
 ## Phase 4 - Gold (analytics)
 - [ ] 12. Dimensions: dim_date, dim_customer, dim_product

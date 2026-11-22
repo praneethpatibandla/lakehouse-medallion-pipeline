@@ -482,3 +482,71 @@ spark.read.format("delta").load("data/silver/customers").where("customer_id = 'C
 ```
 Running `--batch-date 2026-11-01` again now fails on purpose with
 `OutOfOrderBatchError`.
+
+## 11. Conformed products and order items
+
+**What:** Added `src/lakehouse/silver/products.py` and
+`src/lakehouse/silver/order_items.py`. Products are merged into
+`data/silver/products/` as a Type 1 table (one current row per product).
+Order items are merged into `data/silver/order_items/` on the composite key
+`(order_id, line_number)`, get three money columns (`line_gross_amount`,
+`line_discount_amount`, `line_net_amount`), and are checked against silver
+orders and products: a line whose product is not in the catalogue gets
+`unknown_product` in `_dq_issues`, a line whose order is not in silver gets
+`orphan_order`. In `transforms.py`, `_append_issues` became the public
+`append_dq_issues`, since other modules now use it. Tests are in
+`tests/test_silver_conformed.py`.
+
+**Why:**
+- **What "conformed" means.** Every silver table uses the same key formats,
+  types and rules, so gold can join them without cleaning again. Product IDs
+  are upper-cased the same way in products and order items, money is DECIMAL
+  everywhere, and references between tables are checked once, here.
+- **Products are Type 1, customers are Type 2.** The price is copied onto
+  every order line when the order is placed, so revenue never depends on
+  today's catalogue price. That removes the main reason to keep product
+  history. The cost: if a product changes category, its past sales move with
+  it. Choosing SCD type per table, based on what the business reports on, is
+  a common interview question.
+- **Composite key.** One order has several lines, so `order_id` alone is not
+  unique. `merge_condition` from step 09 already supports several keys, so
+  the same `upsert` helper works unchanged.
+- **No change timestamp? Use the batch date.** Products and items have no
+  `updated_at`, so `_batch_date` is the sequence column: a late replay of an
+  older day cannot overwrite data from a newer one, and reruns of the same
+  day are still allowed (`>=`).
+- **Money rules written once, in Python.** `line_amounts` is the reference
+  rule (round the discount half-up to the cent, then net = gross - discount,
+  so the parts always add up). The Spark version must give the same answer,
+  and a Spark test compares them row by row. Amounts stay DECIMAL; a DOUBLE
+  would turn 0.1 + 0.2 into 0.30000000000000004.
+- **Referential integrity without foreign keys.** Delta does not enforce
+  foreign keys, so the job checks them: a left join to the distinct keys of
+  the other table, with `broadcast` because products and orders are small
+  compared to order lines (no shuffle of the big side). Bad lines are
+  flagged, not dropped; gold decides what to exclude, and the flags make the
+  problems countable.
+- **Known limitation.** The flags reflect the state when the line was
+  loaded. If an order arrives a day after its items, the items keep
+  `orphan_order` until their own day is rerun. The data quality framework
+  (step 16) will report these counts.
+
+**Try it:** run silver for orders and products before order items:
+```bash
+PYTHONPATH=src python -m data_generator.reference_data
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 1
+PYTHONPATH=src python -m lakehouse.bronze.ingest --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.silver.orders --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.silver.products --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.silver.order_items --batch-date 2026-11-01
+pytest tests/test_silver_conformed.py -v
+```
+Count the flagged lines and check that the amounts add up:
+```python
+from pyspark.sql import functions as F
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+items = spark.read.format("delta").load("data/silver/order_items")
+items.select(F.explode("_dq_issues").alias("issue")).groupBy("issue").count().show()
+items.where("line_discount_amount + line_net_amount <> line_gross_amount").count()  # expect 0
+```

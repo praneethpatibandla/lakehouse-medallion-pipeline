@@ -100,6 +100,16 @@ applied in date order.
 PYTHONPATH=src python -m lakehouse.silver.customers --batch-date 2026-11-01
 ```
 
+Products are kept as a current-state table in `data/silver/products/`, and
+order items in `data/silver/order_items/` with line amounts (gross, discount,
+net) and flags for lines whose product or order is unknown. Order items are
+checked against silver orders and products, so build those first:
+
+```bash
+PYTHONPATH=src python -m lakehouse.silver.products --batch-date 2026-11-01
+PYTHONPATH=src python -m lakehouse.silver.order_items --batch-date 2026-11-01
+```
+
 ## Run the tests
 
 ```bash
