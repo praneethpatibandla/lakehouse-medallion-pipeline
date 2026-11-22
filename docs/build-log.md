@@ -550,3 +550,62 @@ items = spark.read.format("delta").load("data/silver/order_items")
 items.select(F.explode("_dq_issues").alias("issue")).groupBy("issue").count().show()
 items.where("line_discount_amount + line_net_amount <> line_gross_amount").count()  # expect 0
 ```
+
+## 12. Dimensions: dim_date, dim_customer, dim_product
+
+**What:** Added `src/lakehouse/gold/dimensions.py`, which rebuilds three
+gold tables under `data/gold/`: `dim_date` (one row per day, 2023-2027 by
+default), `dim_customer` (one row per customer version from the SCD2 silver
+table) and `dim_product` (one row per product). Each has a surrogate key
+(`date_key`, `customer_key`, `product_key`), and the customer and product
+dimensions get an "unknown" row with key `-1`. Tests are in
+`tests/test_gold_dimensions.py`.
+
+**Why:**
+- **Star schema.** Gold is shaped for analysts, not for pipelines: one fact
+  table of sales (step 13) joined to small descriptive dimensions. Queries
+  like "net sales by month and customer segment" become one join per
+  dimension and a GROUP BY, and BI tools understand this shape natively.
+- **Surrogate keys instead of source IDs.** `customer_id` is not unique in
+  the dimension: a Type 2 customer has one row per version. The surrogate
+  key identifies one version, so the fact row points at the version that was
+  valid when the order was placed. Keys also shield gold from source ID
+  changes.
+- **Deterministic keys.** Keys are a hash (`xxhash64`) of the business key
+  (`customer_id + valid_from`, or `product_id`), so a rebuild gives every row
+  the same key again. `monotonically_increasing_id()` or `row_number()`
+  would renumber rows whenever the input changes and break facts that were
+  built earlier.
+- **`yyyymmdd` date key.** `20261101` sorts like a date, is readable without
+  a join, and is the usual partition-friendly key for facts.
+- **dim_date is generated, not derived from orders.** A calendar table has
+  every day, including days with no sales, so a daily report shows a zero
+  instead of a missing day. Attributes like ISO week and weekend are computed
+  once, in plain Python, and unit tested (1 Jan 2027 is in ISO week 53 of
+  2026, which a naive `year + weekofyear` grouping gets wrong).
+- **Unknown member (-1).** Some order lines have a missing or orphan
+  customer or an unknown product (steps 04 and 11). Pointing them at `-1`
+  instead of dropping them in an inner join keeps report totals equal to
+  the real totals and makes the problem visible as "Unknown customer".
+- **Full rebuild with an atomic overwrite.** Dimensions are small, so
+  rebuilding them each run is simpler than merging and always correct. A
+  Delta overwrite is one commit, so readers never see a half-written table,
+  and the old version is still there for time travel.
+- **`unit_price` becomes `list_price`.** The catalogue price and the price
+  actually paid are different facts; naming them differently avoids someone
+  summing the wrong one.
+
+**Try it:** build silver customers and products first (steps 10-11), then:
+```bash
+PYTHONPATH=src python -m lakehouse.gold.dimensions
+pytest tests/test_gold_dimensions.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+for name in ("dim_date", "dim_customer", "dim_product"):
+    spark.read.format("delta").load(f"data/gold/{name}").createOrReplaceTempView(name)
+spark.sql("SELECT * FROM dim_date WHERE date_key BETWEEN 20261228 AND 20270103").show()
+spark.sql("SELECT * FROM dim_customer WHERE customer_key = -1").show()
+spark.sql("SELECT category, count(*) FROM dim_product GROUP BY category").show()
+```

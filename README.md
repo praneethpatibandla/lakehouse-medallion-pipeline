@@ -110,6 +110,17 @@ PYTHONPATH=src python -m lakehouse.silver.products --batch-date 2026-11-01
 PYTHONPATH=src python -m lakehouse.silver.order_items --batch-date 2026-11-01
 ```
 
+## Build gold
+
+Rebuild the dimension tables of the star schema in `data/gold/`: `dim_date`
+(calendar), `dim_customer` (one row per customer version) and `dim_product`.
+Each has a surrogate key, plus an "unknown" row with key `-1` for sales whose
+customer or product is missing.
+
+```bash
+PYTHONPATH=src python -m lakehouse.gold.dimensions
+```
+
 ## Run the tests
 
 ```bash

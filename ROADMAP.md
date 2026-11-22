@@ -22,7 +22,7 @@ was added and why.
 - [x] 11. Conformed products and order items
 
 ## Phase 4 - Gold (analytics)
-- [ ] 12. Dimensions: dim_date, dim_customer, dim_product
+- [x] 12. Dimensions: dim_date, dim_customer, dim_product
 - [ ] 13. Fact table: fact_sales
 - [ ] 14. Aggregates: daily sales and customer lifetime value
 - [ ] 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
