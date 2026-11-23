@@ -24,7 +24,7 @@ was added and why.
 ## Phase 4 - Gold (analytics)
 - [x] 12. Dimensions: dim_date, dim_customer, dim_product
 - [x] 13. Fact table: fact_sales
-- [ ] 14. Aggregates: daily sales and customer lifetime value
+- [x] 14. Aggregates: daily sales and customer lifetime value
 - [ ] 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
 
 ## Phase 5 - Production readiness

@@ -687,3 +687,70 @@ spark.sql("SELECT customer_key, product_key, count(*) FROM fact_sales "
 ```
 Inner joins are safe in that query because every key, including `-1`, has a
 dimension row.
+
+## 14. Aggregates: daily sales and customer lifetime value
+
+**What:** Added `src/lakehouse/gold/aggregates.py`, which rebuilds two
+tables from `fact_sales`: `agg_daily_sales` (orders, cancelled and returned
+orders, customers, units, gross, discount, net revenue and average order
+value per day) and `agg_customer_lifetime_value` (first and last order date,
+order count, lifetime net revenue, average order value, tenure and days since
+the last order per customer). Tests are in `tests/test_gold_aggregates.py`.
+
+**Why:**
+- **Why aggregate tables at all.** A dashboard refreshing "revenue per day"
+  would otherwise scan every order line on every refresh. Computing it once
+  per pipeline run turns that into a read of a few hundred rows. The fact
+  table stays the source of truth; aggregates are a cache with a fixed shape.
+- **One revenue rule, defined once.** "Revenue" excludes cancelled and
+  returned orders. The rule lives in `REVENUE_STATUSES` and is used by both
+  tables, so the daily total and the sum of customer lifetime values can
+  never disagree on what counts. Cancelled and returned orders still get
+  their own counts, so they are visible instead of silently missing.
+- **Days with no sales are rows of zeros.** The daily table starts from
+  `dim_date` (limited to the range that has data) and left joins the sales.
+  A chart then shows a dip to zero instead of quietly connecting the days on
+  either side, and "average daily revenue" divides by the right number of
+  days.
+- **Counting orders on a line-level table.** The fact grain is one order
+  line, so `count(*)` would count lines. Orders are counted with
+  `count(DISTINCT order_id)`, and conditional counts use
+  `count(DISTINCT CASE WHEN ... THEN order_id END)`, which works because
+  `count` ignores NULLs.
+- **Average order value is NULL, not 0, with no orders.** There is no
+  average of nothing; a 0 would also pull down any average taken over the
+  column later.
+- **CLV is grouped by `customer_id`, not `customer_key`.** A customer who
+  moved has two SCD2 versions and therefore two surrogate keys, but they are
+  still one customer. Grouping by key would split their history in two. The
+  descriptive columns (segment, state) come from the current version. The
+  unknown customer (-1) is left out because it is many people at once.
+- **Two-step aggregation for CLV.** Lines are first summed into orders,
+  then orders into customers. Averaging per order needs order totals; taking
+  the average straight over lines would give "average line value".
+- **Reproducible "days since last order".** It is measured against the last
+  order date in the data, not today's date, so rebuilding last month's data
+  gives the same numbers whenever it runs, and tests do not depend on the
+  clock.
+- **Same rules in plain Python.** `customer_lifetime_value` and
+  `average_order_value` are unit tested without Spark, and the Spark tests
+  check the same cases on a small fact table.
+
+**Try it:** build gold dimensions and facts first (steps 12-13), then:
+```bash
+PYTHONPATH=src python -m lakehouse.gold.aggregates
+pytest tests/test_gold_aggregates.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+daily = spark.read.format("delta").load("data/gold/agg_daily_sales")
+daily.orderBy("date_key").show()
+clv = spark.read.format("delta").load("data/gold/agg_customer_lifetime_value")
+clv.orderBy(clv.lifetime_net_revenue.desc()).show(10)
+# The two tables agree on total revenue:
+daily.agg({"net_revenue": "sum"}).show()
+clv.agg({"lifetime_net_revenue": "sum"}).show()
+```
+The two totals differ only by revenue from the unknown customer (-1), which
+is in the daily table but not in the customer table.

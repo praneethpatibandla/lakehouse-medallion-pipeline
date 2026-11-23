@@ -132,6 +132,15 @@ are kept under key `-1`.
 PYTHONPATH=src python -m lakehouse.gold.facts
 ```
 
+Finally, rebuild the aggregate tables that dashboards read: `agg_daily_sales`
+(one row per day, with zeros on days without orders) and
+`agg_customer_lifetime_value` (one row per customer). Cancelled and returned
+orders are counted but do not add to revenue.
+
+```bash
+PYTHONPATH=src python -m lakehouse.gold.aggregates
+```
+
 ## Run the tests
 
 ```bash
