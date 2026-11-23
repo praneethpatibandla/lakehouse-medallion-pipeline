@@ -121,6 +121,17 @@ customer or product is missing.
 PYTHONPATH=src python -m lakehouse.gold.dimensions
 ```
 
+Then rebuild the fact table `fact_sales`: one row per order line, with keys
+to the three dimensions and the line amounts. Each sale points at the
+customer version that was valid on the order date. Lines with numbers or
+dates that cannot be trusted (bad quantity, unknown order, no timestamp) are
+left out and counted in the log; lines with an unknown product or customer
+are kept under key `-1`.
+
+```bash
+PYTHONPATH=src python -m lakehouse.gold.facts
+```
+
 ## Run the tests
 
 ```bash

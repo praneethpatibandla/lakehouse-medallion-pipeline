@@ -609,3 +609,81 @@ spark.sql("SELECT * FROM dim_date WHERE date_key BETWEEN 20261228 AND 20270103")
 spark.sql("SELECT * FROM dim_customer WHERE customer_key = -1").show()
 spark.sql("SELECT category, count(*) FROM dim_product GROUP BY category").show()
 ```
+
+## 13. Fact table: fact_sales
+
+**What:** Added `src/lakehouse/gold/facts.py`, which rebuilds
+`data/gold/fact_sales`: one row per order line with `date_key`,
+`customer_key` and `product_key`, the order's status, payment method and
+currency, and the measures `quantity`, `gross_amount`, `discount_amount` and
+`net_amount`. Lines that cannot be reported are left out, and the run logs
+how many were dropped for each reason. Tests are in `tests/test_gold_facts.py`.
+
+**Why:**
+- **Grain first.** The grain is "one order line". Stating it up front tells
+  everyone what a row means and which columns can be summed: summing
+  `net_amount` over any filter gives revenue, while summing an order-level
+  number (like a shipping fee) on a line-level table would double count. That
+  is why only line-level measures live here.
+- **Exclude vs. keep as unknown.** Silver labels problems; gold decides.
+  The rule is: if the *numbers or the date* cannot be trusted (zero or
+  negative quantity, unparseable price, an order that does not exist, no
+  order timestamp), the line is not a sale we can report, so it is left out.
+  If only the *description* is missing (unknown product, missing or unknown
+  customer), the money is real, so the line is kept and points at the
+  unknown member (`-1`). Totals then match the real business totals.
+- **Excluded rows are counted, not silently dropped.** `build_fact_sales`
+  returns the excluded lines with `_exclusion_reasons`, and the job logs one
+  count per reason. A sudden jump in `orphan_order` points at a broken
+  upstream load. The data quality framework (step 16) will turn this into a
+  check that can fail the run.
+- **Point-in-time join for SCD2.** A customer who moved from Portland to
+  Denver has two versions. The join condition
+  `valid_from <= order_date < valid_to` picks the version that was true when
+  they bought, so "sales by state" is historically correct. This is the main
+  reason for keeping Type 2 history in the first place. Orders older than the
+  first snapshot of a customer (a backfill, say) get the first version,
+  because a join that finds nothing would wrongly label a known customer
+  "unknown".
+- **Left joins, never inner joins, to dimensions.** An inner join would
+  silently drop a sale whenever a dimension row is missing. A left join plus
+  `coalesce(key, -1)` keeps the row count of the fact equal to the number of
+  reportable lines.
+- **Date key computed, not joined.** `date_key` is `yyyymmdd` of the order
+  date, a pure function of the date, so a join to `dim_date` would cost a
+  shuffle and add nothing.
+- **Broadcast the product dimension.** dim_product has a few hundred rows;
+  broadcasting it sends a copy to every executor so the large line table is
+  never shuffled for that join.
+- **Rules in plain Python first.** `exclusion_reasons` and
+  `pick_customer_version` state the rules in a few lines that are unit tested
+  without Spark, and the Spark code follows them exactly (the Spark test
+  checks the same cases).
+- **Full rebuild for now.** Like the dimensions, the fact is replaced in one
+  atomic Delta overwrite. That is simple and always correct at this size.
+  Step 15 adds partitioning and step 17 makes the run incremental.
+
+**Try it:** build silver for a few days and the dimensions (steps 09-12), then:
+```bash
+PYTHONPATH=src python -m lakehouse.gold.facts
+pytest tests/test_gold_facts.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+for name in ("fact_sales", "dim_customer", "dim_product", "dim_date"):
+    spark.read.format("delta").load(f"data/gold/{name}").createOrReplaceTempView(name)
+spark.sql("""
+    SELECT d.month_name, c.segment, p.category, round(sum(f.net_amount), 2) AS net_sales
+    FROM fact_sales f
+    JOIN dim_date d     ON f.date_key = d.date_key
+    JOIN dim_customer c ON f.customer_key = c.customer_key
+    JOIN dim_product p  ON f.product_key = p.product_key
+    GROUP BY 1, 2, 3 ORDER BY net_sales DESC
+""").show()
+# Sales that could not be tied to a known customer or product:
+spark.sql("SELECT customer_key, product_key, count(*) FROM fact_sales "
+          "WHERE customer_key = -1 OR product_key = -1 GROUP BY 1, 2").show()
+```
+Inner joins are safe in that query because every key, including `-1`, has a
+dimension row.
