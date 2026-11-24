@@ -25,7 +25,7 @@ was added and why.
 - [x] 12. Dimensions: dim_date, dim_customer, dim_product
 - [x] 13. Fact table: fact_sales
 - [x] 14. Aggregates: daily sales and customer lifetime value
-- [ ] 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
+- [x] 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
 
 ## Phase 5 - Production readiness
 - [ ] 16. Data quality check framework

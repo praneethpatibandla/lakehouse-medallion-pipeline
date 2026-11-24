@@ -754,3 +754,72 @@ clv.agg({"lifetime_net_revenue": "sum"}).show()
 ```
 The two totals differ only by revenue from the unknown customer (-1), which
 is in the daily table but not in the customer table.
+
+## 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
+
+**What:** `fact_sales` is now written partitioned by a new `month_key`
+column (yyyymm). Added `src/lakehouse/maintenance.py`, a job that runs
+`OPTIMIZE` on every Delta table (with `ZORDER BY` on the large ones) and then
+`VACUUM` with a 7-day retention. Tests are in `tests/test_maintenance.py`,
+and the fact test now checks `month_key`.
+
+**Why:**
+- **Partition by month, not by day.** Partitioning splits a table into one
+  folder per value, so a query filtered on that value reads only its folder
+  (partition pruning). But each partition holds at least one file, and a day
+  here is a few hundred rows. Daily partitions would create thousands of
+  tiny files, which is slower than no partitioning at all. A common rule of
+  thumb is to partition only when each partition is around 1 GB or more;
+  at this size monthly partitions are already generous, and they show the
+  pattern. Bronze stays partitioned by `_batch_date` because there the
+  partition is the unit of reloading (`replaceWhere`), not a query filter.
+- **`month_key` is a real column.** Spark can only prune partitions when
+  the filter is on the partition column itself. A filter on `date_key`
+  alone does not prune folders, so reports should add `month_key`.
+  (Delta generated columns can do this automatically; a plain column is
+  simpler to explain and works the same on Databricks.)
+- **OPTIMIZE fixes the small-file problem.** Every append, MERGE and
+  overwrite writes new files. OPTIMIZE bin-packs them into large files in a
+  new commit; readers see the same rows before and after.
+- **Z-ORDER helps data skipping.** Delta stores min/max values per file.
+  Z-ORDER sorts rows by the chosen columns while compacting, so each file
+  covers a narrow range and a filter or MERGE join can skip most files.
+  The columns are the ones each table is filtered or joined on: business
+  keys for the silver MERGE targets (`order_id`, `customer_id`) and
+  `date_key, product_key` for the fact table. Small tables get compaction
+  only, because they are always read in full. A partition column is never
+  Z-ORDERed (it has one value per partition); the job checks this before
+  calling Spark so the error is readable.
+- **VACUUM deletes old files, carefully.** OPTIMIZE, MERGE and overwrite
+  only mark old files as removed in the transaction log; they stay on disk
+  for time travel. VACUUM deletes removed files older than the retention.
+  The job refuses less than 168 hours (Delta's default), because a shorter
+  retention can delete files that a running query, or a time travel query
+  within that window, still needs. `--vacuum-dry-run` lists what would be
+  deleted first.
+- **One failure does not stop the rest.** Each table is maintained in its
+  own try block; failures are logged and the job raises at the end, so one
+  broken table does not leave all the others unmaintained.
+- **On Databricks.** Unity Catalog managed tables can use predictive
+  optimization, which runs OPTIMIZE and VACUUM automatically. Knowing what
+  those commands do is still what lets you choose partition and clustering
+  columns. Newer Delta versions also offer liquid clustering
+  (`CLUSTER BY`) as a replacement for partitioning plus Z-ORDER.
+
+**Try it:** after building gold (steps 12-14):
+```bash
+PYTHONPATH=src python -m lakehouse.gold.facts        # rewrite fact_sales partitioned
+ls data/gold/fact_sales/                              # month_key=202611/ ...
+PYTHONPATH=src python -m lakehouse.maintenance --vacuum-dry-run
+PYTHONPATH=src python -m lakehouse.maintenance
+pytest tests/test_maintenance.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.sql("DESCRIBE HISTORY delta.`data/silver/orders`") \
+     .select("version", "operation", "operationMetrics").show(truncate=False)
+# Partition pruning: look for PartitionFilters in the plan
+spark.read.format("delta").load("data/gold/fact_sales") \
+     .where("month_key = 202611").explain()
+```

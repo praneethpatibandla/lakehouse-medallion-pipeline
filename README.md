@@ -31,6 +31,7 @@ src/lakehouse/
   gold/      dimensions, facts, aggregates
   quality/   data quality checks
   utils/     config, logging, Spark session
+  maintenance.py   OPTIMIZE / Z-ORDER / VACUUM job
 data_generator/   creates synthetic source data
 tests/            unit tests
 docs/             build log and design notes
@@ -139,6 +140,23 @@ orders are counted but do not add to revenue.
 
 ```bash
 PYTHONPATH=src python -m lakehouse.gold.aggregates
+```
+
+`fact_sales` is partitioned by month (`month_key`, e.g. `202611`). Filter on
+`month_key` in queries to read only that month's files.
+
+## Maintain the tables
+
+Daily loads and merges leave many small files behind, and old file versions
+are kept for time travel. Compact every table (and Z-ORDER the large ones on
+their join and filter columns), then delete files that have been unused for
+more than 7 days:
+
+```bash
+PYTHONPATH=src python -m lakehouse.maintenance
+# only some tables, or only list what VACUUM would delete
+PYTHONPATH=src python -m lakehouse.maintenance --tables silver.orders gold.fact_sales
+PYTHONPATH=src python -m lakehouse.maintenance --vacuum-dry-run
 ```
 
 ## Run the tests

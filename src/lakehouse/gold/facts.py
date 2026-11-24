@@ -24,7 +24,10 @@ Customer versions:
     state the customer lived in when they bought, not where they live today.
 
 The table is rebuilt in full with one atomic Delta overwrite, like the
-dimensions. Step 15 partitions it and step 17 makes the run incremental.
+dimensions, and is partitioned by month (`month_key`, yyyymm). Monthly, not
+daily: a day of sales is far too small to be worth its own folder of files
+(see `lakehouse.maintenance` and step 15 of the build log). Step 17 makes the
+run incremental.
 
 Usage (after silver and the gold dimensions are built):
     python -m lakehouse.gold.facts
@@ -66,8 +69,12 @@ FACT_COLUMNS = (
     "order_id", "line_number", "date_key", "customer_key", "product_key",
     "order_ts", "order_status", "payment_method", "currency",
     "quantity", "unit_price", "discount_pct",
-    "gross_amount", "discount_amount", "net_amount",
+    "gross_amount", "discount_amount", "net_amount", "month_key",
 )
+# Physical layout: one folder per month. A query with a filter on month_key
+# only reads that month's files (partition pruning). A filter on date_key
+# alone does not prune folders, but Z-ORDER statistics still skip files.
+FACT_PARTITION_COLUMNS = ("month_key",)
 
 # A date before any real order: the first version of each customer is
 # stretched back to it (see `pick_customer_version`).
@@ -228,15 +235,23 @@ def build_fact_sales(items: "DataFrame", orders: "DataFrame", dim_customer: "Dat
                 F.col("line_gross_amount").alias("gross_amount"),
                 F.col("line_discount_amount").alias("discount_amount"),
                 F.col("line_net_amount").alias("net_amount"),
+                # yyyymmdd -> yyyymm, the partition column.
+                F.expr("CAST(date_key DIV 100 AS INT)").alias("month_key"),
             ))
     return fact, excluded
 
 
 def write_fact(df: "DataFrame", path: str) -> None:
-    """Replace the whole table in one atomic Delta commit."""
+    """Replace the whole table in one atomic Delta commit, partitioned by month.
+
+    `overwriteSchema` also allows the partitioning to change, so a table
+    written by an older, unpartitioned version of this job is rewritten
+    with the new layout instead of failing.
+    """
     (df.write.format("delta")
        .mode("overwrite")
        .option("overwriteSchema", "true")
+       .partitionBy(*FACT_PARTITION_COLUMNS)
        .save(path))
 
 

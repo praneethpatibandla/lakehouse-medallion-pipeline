@@ -122,6 +122,7 @@ def test_fact_sales_keys_and_exclusions(spark):
     # SCD2: the order on 11-03 gets version 11, the one on 11-06 version 12.
     assert (rows["O1"]["customer_key"], rows["O2"]["customer_key"]) == (11, 12)
     assert rows["O1"]["date_key"] == 20261103
+    assert rows["O1"]["month_key"] == 202611   # partition column (step 15)
     # Missing descriptions point at the unknown member instead of being dropped.
     assert rows["O2"]["product_key"] == UNKNOWN_KEY
     assert rows["O3"]["customer_key"] == UNKNOWN_KEY
