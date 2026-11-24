@@ -28,7 +28,7 @@ was added and why.
 - [x] 15. Partitioning, OPTIMIZE / Z-ORDER and VACUUM maintenance job
 
 ## Phase 5 - Production readiness
-- [ ] 16. Data quality check framework
+- [x] 16. Data quality check framework
 - [ ] 17. End-to-end pipeline runner with incremental watermarks
 - [ ] 18. Unit tests with a local Spark session
 - [ ] 19. GitHub Actions CI: lint and tests

@@ -823,3 +823,71 @@ spark.sql("DESCRIBE HISTORY delta.`data/silver/orders`") \
 spark.read.format("delta").load("data/gold/fact_sales") \
      .where("month_key = 202611").explain()
 ```
+
+## 16. Data quality check framework
+
+**What:** Added `src/lakehouse/quality/checks.py`, a small framework of
+declarative checks (`not_null`, `unique`, `accepted_values`, `between`,
+`expression`, `foreign_key`, `min_row_count`), and
+`src/lakehouse/quality/suites.py`, which defines the rules for each silver
+and gold table, runs them, appends every result to `audit/dq_results`, and
+fails the job if an error-level check fails. Tests are in
+`tests/test_quality.py`.
+
+**Why:**
+- **Tests check code; data quality checks check data.** Unit tests prove the
+  transformations are right for the inputs we thought of. Real data keeps
+  inventing new inputs, so the output itself must be checked on every run.
+  This is the same idea as dbt tests or Great Expectations, written out by
+  hand so every part is visible.
+- **Rules are data, not code.** Each check is a small frozen dataclass, and
+  a table's suite is a tuple of them. Adding a rule is one line, the full
+  list of rules for a table can be read at a glance, and the rules can be
+  unit tested without Spark.
+- **Count failing rows, then compare with a tolerance.** Every check
+  reduces to "how many rows break the rule?". `max_failure_ratio` says how
+  many are acceptable: 0 for keys and joins, a few percent for things the
+  generator makes dirty on purpose. A "5% of rows have issues" rule is much
+  more useful than "any issue fails", which would fail every day and get
+  ignored.
+- **Error vs warn.** `error` means the data is wrong and publishing it would
+  mislead (duplicate fact rows double revenue; an orphan key drops sales
+  from every inner join). `warn` means "suspicious, look at it" (more
+  flagged rows than usual, unknown order statuses). Silver keeps dirty rows
+  on purpose, so its content rules are warnings; gold is what people report
+  from, so its structural rules are errors.
+- **NULL is a failure, not a pass.** In SQL, `NULL > 0` is NULL, and a
+  `WHERE NOT (x > 0)` filter would quietly skip it. Failing rows are found
+  with `NOT coalesce(rule, false)`, so "cannot tell" counts as failed.
+  `unique` and `foreign_key` ignore NULLs on purpose: that is what
+  `not_null` is for, and one problem should be reported once.
+- **Rules that guard earlier steps.** The suites encode the promises made
+  by previous steps: one current SCD2 version per customer and only that one
+  open-ended (step 10), every fact key present in its dimension and the
+  unknown member present (steps 12-13), `net = gross - discount` (step 11),
+  one row per day in the daily aggregate (step 14). If a later change breaks
+  one of them, the pipeline says so instead of publishing wrong numbers.
+- **`min_row_count` catches the silent failure.** An empty table passes
+  every other rule, because there is nothing to break them.
+- **Run everything, then fail.** All checks run before the job raises, so
+  one run reports every problem instead of one per rerun.
+- **Results are kept.** Each run appends to `audit/dq_results` with a run
+  id, so trends can be queried, for example how the share of flagged orders
+  changes over time.
+
+**Try it:** after building silver and gold:
+```bash
+PYTHONPATH=src python -m lakehouse.quality.suites
+PYTHONPATH=src python -m lakehouse.quality.suites --tables gold.fact_sales
+pytest tests/test_quality.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.read.format("delta").load("data/audit/dq_results") \
+     .orderBy("checked_at", "table_name").show(50, truncate=False)
+```
+To see a check fail, append a duplicate row to a gold table (for example
+re-append one `dim_product` row) and run the suite again: the job exits with
+an error listing `unique(product_key)`. Rebuild the table afterwards with
+`python -m lakehouse.gold.dimensions`.

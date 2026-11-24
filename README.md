@@ -145,6 +145,19 @@ PYTHONPATH=src python -m lakehouse.gold.aggregates
 `fact_sales` is partitioned by month (`month_key`, e.g. `202611`). Filter on
 `month_key` in queries to read only that month's files.
 
+## Check data quality
+
+Run the data quality rules for silver and gold (unique keys, no orphan
+foreign keys, valid amounts, SCD2 consistency, share of flagged rows):
+
+```bash
+PYTHONPATH=src python -m lakehouse.quality.suites            # every table
+PYTHONPATH=src python -m lakehouse.quality.suites --layer gold
+```
+
+Failed `error` checks stop the job with a non-zero exit code; `warn` checks
+are only logged. Every result is appended to `data/audit/dq_results/`.
+
 ## Maintain the tables
 
 Daily loads and merges leave many small files behind, and old file versions
