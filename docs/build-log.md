@@ -891,3 +891,75 @@ To see a check fail, append a duplicate row to a gold table (for example
 re-append one `dim_product` row) and run the suite again: the job exits with
 an error listing `unique(product_key)`. Rebuild the table afterwards with
 `python -m lakehouse.gold.dimensions`.
+
+## 17. End-to-end pipeline runner with incremental watermarks
+
+**What:** Added `src/lakehouse/pipeline.py`, one command that runs the whole
+pipeline: it finds the batch dates in the landing zone, keeps the ones after
+the watermark, loads each of them through bronze and silver (oldest first),
+then rebuilds gold and runs the data quality suites once. Every stage attempt
+is appended to a new Delta table, `audit/pipeline_runs`, which is where the
+watermarks come from. Planning logic is pure Python and tested in
+`tests/test_pipeline.py`.
+
+**Why:**
+- **A watermark makes the pipeline incremental.** The watermark is the
+  newest batch date that was processed successfully. Each run only loads
+  dates after it, so a daily schedule processes one new day instead of
+  reprocessing everything, and a run after a week offline catches up on all
+  seven days on its own.
+- **State lives in a table, not in the scheduler.** The watermark is
+  computed from `audit/pipeline_runs` (the newest `success` row). Failed
+  attempts are recorded too but never move it, so the next run retries them
+  automatically. Because the table is append-only, it is also a history of
+  every run: what ran, when, and what failed.
+- **Two watermarks: silver and gold.** Bronze + silver are processed per
+  date; gold is rebuilt once per run from all of silver. If gold or a data
+  quality check fails, the silver dates are already done, so a single
+  watermark would say "nothing new" and gold would stay stale forever. A
+  separate gold watermark ("gold built through date X") makes the next run
+  retry gold even when no new files have arrived.
+- **Commit progress per date, stop at the first failure.** The silver
+  watermark moves after each date, so a failure on day 3 keeps days 1-2.
+  Later dates are not attempted: the customers SCD2 table must be built in
+  date order (step 10), and a watermark with a gap in it would skip the
+  failed day forever.
+- **Retries are safe because each step is idempotent.** Bronze replaces the
+  batch's partition and silver uses MERGE, so re-running a date that failed
+  halfway gives the same result as running it once. Idempotency is what
+  makes "just run it again" a valid recovery plan.
+- **Only complete batches are loaded.** A date counts only when every daily
+  source (orders and order items) has data files in its folder. Loading
+  orders without their lines would publish a half day. Files starting with
+  `.` or `_` (upload markers) are ignored for the same reason.
+- **The trade-off: late data.** A watermark only looks forward. If 2 Nov
+  lands after 3 Nov was processed, it is never picked up automatically. The
+  runner logs a warning for such dates instead of losing them silently.
+  Handling late data properly means a backfill, which is a deliberate action
+  (and for SCD2 customers, a rebuild).
+- **`--max-batches` and `--until` bound a run.** A big backlog in one run is
+  all-or-nothing work that takes long and is painful to retry; capping it
+  keeps runs small. `--dry-run` shows the plan without changing anything,
+  which is the first thing to run when something looks wrong.
+- **Maintenance stays outside the watermark.** OPTIMIZE / VACUUM never change
+  what the data says, so `--maintenance` runs them at the end but their
+  result does not affect the run state.
+
+**Try it:**
+```bash
+PYTHONPATH=src python -m data_generator.reference_data --customers 500 --products 100
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3
+PYTHONPATH=src python -m lakehouse.pipeline --dry-run      # plan: 3 new batches, build gold
+PYTHONPATH=src python -m lakehouse.pipeline --max-batches 2
+PYTHONPATH=src python -m lakehouse.pipeline                # only 2026-11-03 is new
+PYTHONPATH=src python -m lakehouse.pipeline                # "Nothing to do"
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-04 --days 1
+PYTHONPATH=src python -m lakehouse.pipeline --maintenance  # picks up 2026-11-04
+pytest tests/test_pipeline.py -v
+```
+```python
+from lakehouse.utils.spark import get_spark
+spark = get_spark()
+spark.read.format("delta").load("data/audit/pipeline_runs") \
+     .orderBy("started_at").show(truncate=False)
+```

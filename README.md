@@ -31,6 +31,7 @@ src/lakehouse/
   gold/      dimensions, facts, aggregates
   quality/   data quality checks
   utils/     config, logging, Spark session
+  pipeline.py      end-to-end runner with incremental watermarks
   maintenance.py   OPTIMIZE / Z-ORDER / VACUUM job
 data_generator/   creates synthetic source data
 tests/            unit tests
@@ -66,6 +67,27 @@ PYTHONPATH=src python -m data_generator.reference_data --customers 500 --product
 # orders and order items, one folder per day, ~5% deliberately dirty records
 PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3 --orders-per-day 200
 ```
+
+## Run the whole pipeline
+
+One command loads every new batch date through bronze and silver, then
+rebuilds gold and runs the data quality checks:
+
+```bash
+PYTHONPATH=src python -m lakehouse.pipeline --dry-run   # show what would run
+PYTHONPATH=src python -m lakehouse.pipeline
+```
+
+The runner keeps a watermark (the newest batch date already processed) in
+`data/audit/pipeline_runs/`, so running it again only processes dates that
+have landed since. Generate another day and run it again to see this. Useful
+options: `--until DATE`, `--max-batches N` and `--maintenance` (also run
+OPTIMIZE / VACUUM). If a run fails it stops at that date; fix the cause and
+run it again to continue from there. To start from scratch, delete every
+folder in `data/` except `landing/`.
+
+The sections below run each step on its own, which is useful for learning
+and debugging.
 
 ## Load bronze
 
