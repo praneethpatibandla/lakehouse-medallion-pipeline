@@ -963,3 +963,57 @@ spark = get_spark()
 spark.read.format("delta").load("data/audit/pipeline_runs") \
      .orderBy("started_at").show(truncate=False)
 ```
+
+## 18. Unit tests with a local Spark session
+
+**What:** Added `tests/conftest.py` with one shared, Delta-enabled local
+`spark` fixture and a `lake_config` fixture that gives each test an empty lake
+folder. The per-module Spark fixtures that every test file had copied were
+removed, and the bronze and session tests now use the shared fixture too.
+Tests that need Spark are marked `spark` automatically, so
+`pytest -m "not spark"` runs only the fast tests. Two end-to-end tests were
+added to `tests/test_pipeline.py`: they generate a tiny lake and run the
+pipeline runner from step 17 through bronze, silver, gold and the quality
+checks.
+
+**Why:**
+- **Two kinds of tests.** Pure-Python tests (planning, keys, check rules)
+  run in milliseconds and need nothing installed. Spark tests prove that the
+  DataFrame code really does what the pure logic says, but need a JVM. Both
+  are needed; the `spark` marker lets you pick the fast set while editing and
+  run everything before a commit.
+- **One session for the whole run.** Starting Spark with the Delta jars
+  takes several seconds. With one session per test module, every new module
+  made the suite slower. A `scope="session"` fixture starts it once. This is
+  the standard pattern for PySpark test suites.
+- **Isolation comes from folders, not sessions.** Path-based Delta tables
+  are just folders, so giving each test a fresh `tmp_path` lake is enough to
+  keep tests from seeing each other's tables, even though they share one
+  session.
+- **Configs are built, not read from the environment.** `make_config` creates
+  a `PipelineConfig` directly with one shuffle partition. Setting environment
+  variables in one test can leak into another; an explicit object cannot.
+  One shuffle partition stops tiny DataFrames being split into many tasks.
+- **Skip, don't fail, when Spark is missing.** The fixture skips with a clear
+  reason when pyspark, delta-spark or Java is not installed (`pytest -rs`
+  shows it). A machine without Java can still run the pure tests, and CI
+  (next step) installs everything so nothing is skipped there.
+- **End-to-end tests catch what unit tests cannot.** Each step was tested on
+  its own, but the runner depends on the steps fitting together: load order
+  (products before order items), the watermark moving per date, gold only
+  being built after every date succeeded. The first test runs two days, then
+  checks that a rerun does nothing and that a third day is picked up alone.
+  The second makes day 2 mostly corrupt and checks that day 1 is kept, day 3
+  is not attempted, gold is not built, and the next run continues from day 2
+  once a clean file arrives.
+- **Generated data with `dirty_rate=0`.** The end-to-end tests are about the
+  runner, so the data is clean and every quality error check passes; the
+  dirty-data paths already have their own focused tests.
+
+**Try it:** needs Java 11 or 17 and `pip install -r requirements.txt`:
+```bash
+pytest -q -m "not spark"                    # fast tests only
+pytest -q -m spark -rs                      # Spark tests, show skip reasons
+pytest tests/test_pipeline.py -v            # runner: planning + end-to-end
+pytest --durations=5                        # the slowest tests
+```

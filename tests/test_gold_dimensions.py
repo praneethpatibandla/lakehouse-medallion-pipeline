@@ -50,20 +50,6 @@ def test_date_rows_rejects_reversed_range():
 # Spark tests: skipped when pyspark / delta-spark / Java are missing.
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def spark(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-gold-dimensions", config)
-    yield session
-    session.stop()
-
-
 def _silver_customers(spark):
     schema = ("customer_id string, first_name string, last_name string, city string, "
               "state string, country string, segment string, signup_date date, "

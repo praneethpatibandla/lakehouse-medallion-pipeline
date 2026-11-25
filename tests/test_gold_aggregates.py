@@ -3,8 +3,6 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-import pytest
-
 from lakehouse.gold.aggregates import (
     CLV_COLUMNS,
     DAILY_SALES_COLUMNS,
@@ -61,20 +59,6 @@ def test_customer_lifetime_value_with_no_revenue_orders():
 # ---------------------------------------------------------------------------
 # Spark tests: skipped when pyspark / delta-spark / Java are missing.
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def spark(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-gold-aggregates", config)
-    yield session
-    session.stop()
-
 
 def _fact(spark):
     d = Decimal

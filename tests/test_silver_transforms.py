@@ -1,8 +1,6 @@
 from datetime import date
 from decimal import Decimal
 
-import pytest
-
 from data_generator.orders import STATUSES
 from lakehouse.bronze.schemas import SOURCE_COLUMNS
 from lakehouse.silver.transforms import CLEANERS, TARGET_TYPES, VALID_ORDER_STATUSES
@@ -22,21 +20,9 @@ def test_valid_statuses_match_the_source_system():
 
 
 # ---------------------------------------------------------------------------
-# Spark tests: need pyspark and Java, skipped otherwise. Plain Spark is enough
-# (no Delta), so a bare local session is used to keep them fast.
+# Spark tests: use the shared `spark` fixture (tests/conftest.py) and are
+# skipped when pyspark / delta-spark / Java are missing.
 # ---------------------------------------------------------------------------
-
-@pytest.fixture(scope="module")
-def spark():
-    pytest.importorskip("pyspark")
-    from pyspark.sql import SparkSession
-
-    session = (SparkSession.builder.master("local[1]").appName("test-transforms")
-               .config("spark.sql.session.timeZone", "UTC")
-               .config("spark.sql.shuffle.partitions", "1").getOrCreate())
-    yield session
-    session.stop()
-
 
 def _orders(spark, rows):
     from lakehouse.bronze.schemas import spark_schema

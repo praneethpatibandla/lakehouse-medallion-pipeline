@@ -12,7 +12,6 @@ from lakehouse.bronze.audit import (
     QuarantineThresholdExceeded,
     check_quarantine_threshold,
 )
-from lakehouse.utils.config import load_config
 
 DAY = date(2026, 11, 1)
 
@@ -63,21 +62,14 @@ def test_threshold_rejects_invalid_input(read, quarantined, ratio):
         check_quarantine_threshold("orders", read, quarantined, max_ratio=ratio)
 
 
-def test_corrupt_lines_are_quarantined_and_audited(monkeypatch, tmp_path):
-    """Needs pyspark, delta-spark and Java; skipped when they are missing."""
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
+def test_corrupt_lines_are_quarantined_and_audited(spark, lake_config):
     from lakehouse.bronze.ingest import AUDIT_TABLE, ingest
-    from lakehouse.utils.spark import get_spark
 
-    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
-    monkeypatch.setenv("LAKEHOUSE_DATA_ROOT", str(tmp_path))
-    config = load_config()
+    config = lake_config
     batch = generate_daily_batch(DAY, ["C00001"], generate_products(3), orders_per_day=10, dirty_rate=0)
     batch.corrupt_lines.append('{"order_id": "O20261101-000')  # truncated JSON
     write_batch(batch, config.landing_path)
 
-    spark = get_spark("test-quarantine", config)
     # 1 of 11 lines is corrupt (9%): over the default limit, so bronze is not written.
     with pytest.raises(QuarantineThresholdExceeded):
         ingest(spark, config, "orders", DAY, "run-1")

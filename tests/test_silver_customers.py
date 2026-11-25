@@ -40,20 +40,6 @@ def test_check_batch_order_rejects_older_snapshots():
 # Spark + Delta tests: skipped when pyspark / delta-spark / Java are missing.
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def spark(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-silver-customers", config)
-    yield session
-    session.stop()
-
-
 def _snapshot(spark, rows, batch_date):
     """Bronze-shaped customers snapshot, prepared for the SCD2 merge."""
     from pyspark.sql import functions as F

@@ -114,3 +114,98 @@ def test_run_record_rows():
 def test_reference_data_loads_before_daily_sources():
     assert set(BRONZE_ORDER) == set(DAILY_SOURCES) | {"customers", "products"}
     assert BRONZE_ORDER.index("products") < BRONZE_ORDER.index("order_items")
+
+
+# ---------------------------------------------------------------------------
+# Spark tests: the whole pipeline on a tiny lake. They use the shared `spark`
+# fixture (tests/conftest.py) and are skipped without pyspark / delta / Java.
+# ---------------------------------------------------------------------------
+
+def _land_reference_data(config):
+    from data_generator.reference_data import (CUSTOMER_COLUMNS, PRODUCT_COLUMNS,
+                                               generate_customers, generate_products, write_csv)
+    customers, products = generate_customers(20), generate_products(10)
+    write_csv(customers, CUSTOMER_COLUMNS, config.landing_path / "customers" / "customers.csv")
+    write_csv(products, PRODUCT_COLUMNS, config.landing_path / "products" / "products.csv")
+    return [c["customer_id"] for c in customers], products
+
+
+def _land_day(config, day, customer_ids, products, corrupt_lines=0):
+    from data_generator.orders import generate_daily_batch, write_batch
+    # dirty_rate=0 keeps every data quality error check green, so the test
+    # is about the runner, not about the generator's random defects.
+    batch = generate_daily_batch(day, customer_ids, products, orders_per_day=15, dirty_rate=0)
+    batch.corrupt_lines.extend(['{"order_id": "broken'] * corrupt_lines)
+    write_batch(batch, config.landing_path)
+
+
+def _run(spark, config):
+    """What `python -m lakehouse.pipeline` does, minus the CLI."""
+    from lakehouse.pipeline import read_run_state, run_pipeline
+
+    by_source = {name: landed_dates(config.landing_path, name) for name in DAILY_SOURCES}
+    state = read_run_state(spark, config)
+    plan = plan_run(complete_batch_dates(by_source),
+                    watermark(state, STAGE_SILVER), watermark(state, STAGE_GOLD))
+    run_pipeline(spark, config, plan, run_id=f"run-{len(state)}")
+    return plan
+
+
+def _count(spark, config, layer, table):
+    return spark.read.format("delta").load(config.table_path(layer, table)).count()
+
+
+def test_pipeline_processes_only_new_batches(spark, lake_config):
+    from lakehouse.pipeline import read_run_state
+
+    config = lake_config
+    customer_ids, products = _land_reference_data(config)
+    for day in (D1, D2):
+        _land_day(config, day, customer_ids, products)
+
+    first = _run(spark, config)
+    assert first.batch_dates == (D1, D2) and first.build_gold
+    assert _count(spark, config, "silver", "orders") == 30
+    fact_rows = _count(spark, config, "gold", "fact_sales")
+    assert fact_rows > 0
+
+    # Nothing new landed: the second run does nothing at all.
+    assert _run(spark, config) == RunPlan((), False, D2)
+    assert _count(spark, config, "gold", "fact_sales") == fact_rows
+
+    # A new day arrives: only that day is loaded, and gold is rebuilt.
+    _land_day(config, D3, customer_ids, products)
+    third = _run(spark, config)
+    assert third.batch_dates == (D3,) and third.gold_through == D3
+    assert _count(spark, config, "silver", "orders") == 45
+    assert _count(spark, config, "gold", "fact_sales") > fact_rows
+
+    state = read_run_state(spark, config)
+    assert watermark(state, STAGE_SILVER) == D3 and watermark(state, STAGE_GOLD) == D3
+    assert all(status == SUCCESS for _, _, status in state)
+
+
+def test_failed_batch_stops_the_run_and_is_retried(spark, lake_config):
+    from lakehouse.bronze.audit import QuarantineThresholdExceeded
+    from lakehouse.pipeline import read_run_state
+
+    config = lake_config
+    customer_ids, products = _land_reference_data(config)
+    _land_day(config, D1, customer_ids, products)
+    _land_day(config, D2, customer_ids, products, corrupt_lines=5)  # 25% corrupt
+    _land_day(config, D3, customer_ids, products)
+
+    with pytest.raises(QuarantineThresholdExceeded):
+        _run(spark, config)
+    state = read_run_state(spark, config)
+    assert watermark(state, STAGE_SILVER) == D1        # D1 kept, D3 never attempted
+    assert watermark(state, STAGE_GOLD) is None        # gold not built from a partial run
+    assert (STAGE_SILVER, D2, FAILED) in state
+    assert D3 not in processed_dates(state)
+
+    # The source re-sends a clean file; the next run continues from D2.
+    _land_day(config, D2, customer_ids, products)
+    retry = _run(spark, config)
+    assert retry.batch_dates == (D2, D3) and retry.build_gold
+    assert _count(spark, config, "silver", "orders") == 45
+    assert watermark(read_run_state(spark, config), STAGE_GOLD) == D3

@@ -197,5 +197,11 @@ PYTHONPATH=src python -m lakehouse.maintenance --vacuum-dry-run
 ## Run the tests
 
 ```bash
-pytest -q
+pytest -q                 # everything
+pytest -q -m "not spark"  # only the fast pure-Python tests (no Java needed)
+pytest -q -m spark -rs    # only the Spark / Delta tests, showing skip reasons
 ```
+
+Spark tests share one local SparkSession (see `tests/conftest.py`). They are
+skipped, not failed, when pyspark, delta-spark or Java is missing; `-rs`
+prints why.

@@ -40,22 +40,6 @@ def test_parse_merge_metrics_converts_strings_and_defaults_to_zero():
 DAY1, DAY2 = date(2026, 11, 1), date(2026, 11, 2)
 
 
-@pytest.fixture(scope="module")
-def spark(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    # Built directly (not from environment variables) so nothing leaks into
-    # other test modules. Tables are written to explicit tmp paths below.
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-silver-merge", config)
-    yield session
-    session.stop()
-
-
 def _bronze_orders(spark, rows, batch_date):
     """Build a bronze-shaped DataFrame: all-string source columns + metadata."""
     from pyspark.sql import functions as F

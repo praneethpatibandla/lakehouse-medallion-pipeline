@@ -74,18 +74,10 @@ def test_table_specs_are_unique_and_fact_is_not_zordered_on_its_partition():
 # Spark tests: skipped when pyspark / delta-spark / Java are missing.
 # ---------------------------------------------------------------------------
 
-@pytest.fixture(scope="module")
-def lake(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-maintenance", config)
-    yield session, config
-    session.stop()
+@pytest.fixture
+def lake(spark, lake_config):
+    """The shared session plus an empty lake folder for each test."""
+    return spark, lake_config
 
 
 def _write_small_files(spark, path, batches=5):
@@ -126,6 +118,7 @@ def test_run_maintenance_skips_missing_tables(lake):
     from lakehouse.maintenance import run_maintenance
 
     spark, config = lake
+    _write_small_files(spark, config.table_path("silver", "orders"), batches=2)
     specs = [TableMaintenance("silver", "orders", ("order_id",)),
              TableMaintenance("gold", "does_not_exist")]
     results = run_maintenance(spark, config, specs, vacuum_dry_run=True)

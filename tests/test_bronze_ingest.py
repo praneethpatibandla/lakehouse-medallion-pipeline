@@ -47,23 +47,16 @@ def test_metadata_columns_do_not_clash_with_source_columns():
     assert not source_columns & set(METADATA_COLUMNS)
 
 
-def test_ingest_is_idempotent(monkeypatch, tmp_path):
-    """Needs pyspark, delta-spark and Java; skipped when they are missing."""
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
+def test_ingest_is_idempotent(spark, lake_config):
     from lakehouse.bronze.ingest import ingest
-    from lakehouse.utils.spark import get_spark
 
-    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
-    monkeypatch.setenv("LAKEHOUSE_DATA_ROOT", str(tmp_path))
-    config = load_config()
+    config = lake_config
     customers = generate_customers(5)
     write_csv(customers, CUSTOMER_COLUMNS, config.landing_path / "customers" / "customers.csv")
     batch = generate_daily_batch(DAY, [c["customer_id"] for c in customers],
                                  generate_products(3), orders_per_day=10, dirty_rate=0)
     write_batch(batch, config.landing_path)
 
-    spark = get_spark("test-bronze", config)
     assert ingest(spark, config, "orders", DAY, "run-1") == 10
     # Re-running the same day replaces the partition instead of appending.
     assert ingest(spark, config, "orders", DAY, "run-2") == 10

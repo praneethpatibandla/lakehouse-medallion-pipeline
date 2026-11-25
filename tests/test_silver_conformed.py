@@ -3,8 +3,6 @@
 from datetime import date, datetime
 from decimal import Decimal
 
-import pytest
-
 from lakehouse.bronze.schemas import ORDER_ITEMS, PRODUCTS
 from lakehouse.silver import order_items, products
 from lakehouse.silver.order_items import AMOUNT_COLUMNS, line_amounts
@@ -39,20 +37,6 @@ def test_line_amounts_propagates_missing_inputs_like_sql_null():
 # ---------------------------------------------------------------------------
 
 DAY1 = date(2026, 11, 1)
-
-
-@pytest.fixture(scope="module")
-def spark(tmp_path_factory):
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.config import PipelineConfig
-    from lakehouse.utils.spark import get_spark
-
-    config = PipelineConfig(env="test", data_root=tmp_path_factory.mktemp("lake"),
-                            log_level="WARNING", shuffle_partitions=1)
-    session = get_spark("test-silver-conformed", config)
-    yield session
-    session.stop()
 
 
 def _bronze(spark, source, rows, batch_date=DAY1):

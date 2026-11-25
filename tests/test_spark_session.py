@@ -1,5 +1,3 @@
-import pytest
-
 from lakehouse.utils.config import load_config
 from lakehouse.utils.spark import DELTA_SPARK_CONF, build_spark_conf, is_databricks
 
@@ -29,15 +27,8 @@ def test_is_databricks(monkeypatch):
     assert is_databricks()
 
 
-def test_delta_round_trip(monkeypatch, tmp_path):
-    """Needs pyspark, delta-spark and Java; skipped when they are missing."""
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
-    from lakehouse.utils.spark import get_spark
-
-    monkeypatch.delenv("DATABRICKS_RUNTIME_VERSION", raising=False)
-    monkeypatch.setenv("LAKEHOUSE_DATA_ROOT", str(tmp_path))
-    spark = get_spark("test-delta-round-trip", load_config())
+def test_delta_round_trip(spark, tmp_path):
+    """The shared session (built by get_spark in conftest.py) reads and writes Delta."""
     path = str(tmp_path / "numbers")
     spark.range(5).write.format("delta").save(path)
     assert spark.read.format("delta").load(path).count() == 5
