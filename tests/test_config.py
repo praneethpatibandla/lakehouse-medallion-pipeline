@@ -8,7 +8,7 @@ from lakehouse.utils.logger import get_logger
 
 def test_defaults(monkeypatch):
     for var in ("LAKEHOUSE_ENV", "LAKEHOUSE_DATA_ROOT", "LAKEHOUSE_LOG_LEVEL",
-                "LAKEHOUSE_SHUFFLE_PARTITIONS"):
+                "LAKEHOUSE_SHUFFLE_PARTITIONS", "LAKEHOUSE_CATALOG"):
         monkeypatch.delenv(var, raising=False)
     config = load_config()
     assert config.env == "dev"

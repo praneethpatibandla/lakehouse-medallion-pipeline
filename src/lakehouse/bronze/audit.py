@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
+from lakehouse.utils.tables import save_table
+
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
     from pyspark.sql.types import StructType
@@ -134,4 +136,4 @@ def write_audit_record(spark: "SparkSession", record: AuditRecord, table_path: s
     # A tuple in schema order avoids relying on dict-to-column name matching.
     row = tuple(record.to_row().values())
     df = spark.createDataFrame([row], schema=audit_schema())
-    df.write.format("delta").mode("append").save(table_path)
+    save_table(df.write.format("delta").mode("append"), table_path)

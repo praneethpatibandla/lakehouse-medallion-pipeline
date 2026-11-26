@@ -30,6 +30,7 @@ from lakehouse.silver.merge import MergeStats, deduplicate_latest, split_null_ke
 from lakehouse.silver.transforms import clean_orders
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -59,7 +60,7 @@ def read_bronze_batch(spark: "SparkSession", config: PipelineConfig, batch_date:
     """Read only one day's partition, so each run processes just the new data."""
     from pyspark.sql import functions as F
 
-    return (spark.read.format("delta").load(config.table_path("bronze", TABLE))
+    return (read_table(spark, config.table_path("bronze", TABLE))
             .where(F.col("_batch_date") == F.lit(batch_date)))
 
 

@@ -46,6 +46,7 @@ from lakehouse.silver.merge import (
 from lakehouse.silver.transforms import clean_customers
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import create_table_if_not_exists, read_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -121,13 +122,9 @@ def apply_scd2(spark: "SparkSession", snapshot: "DataFrame", path: str,
     In the returned stats, `updated` is the number of versions closed and
     `inserted` the number of new versions (new customers + changed ones).
     """
-    from delta.tables import DeltaTable
     from pyspark.sql import functions as F
 
-    table = (DeltaTable.createIfNotExists(spark)
-             .location(path)
-             .addColumns(snapshot.schema)
-             .execute())
+    table = create_table_if_not_exists(spark, path, snapshot.schema)
     current = table.toDF().where(F.col("is_current"))
     check_batch_order(batch_date, current.agg(F.max("valid_from")).first()[0])
 
@@ -155,7 +152,7 @@ def load_silver_customers(spark: "SparkSession", config: PipelineConfig,
     """Apply one day's customer snapshot from bronze to silver."""
     from pyspark.sql import functions as F
 
-    bronze = (spark.read.format("delta").load(config.table_path("bronze", TABLE))
+    bronze = (read_table(spark, config.table_path("bronze", TABLE))
               .where(F.col("_batch_date") == F.lit(batch_date)))
     snapshot, rejected = prepare_snapshot(bronze, batch_date)
 

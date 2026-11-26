@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 from lakehouse.gold.dimensions import UNKNOWN_KEY
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -248,11 +249,10 @@ def write_fact(df: "DataFrame", path: str) -> None:
     written by an older, unpartitioned version of this job is rewritten
     with the new layout instead of failing.
     """
-    (df.write.format("delta")
-       .mode("overwrite")
-       .option("overwriteSchema", "true")
-       .partitionBy(*FACT_PARTITION_COLUMNS)
-       .save(path))
+    save_table(df.write.format("delta")
+               .mode("overwrite")
+               .option("overwriteSchema", "true")
+               .partitionBy(*FACT_PARTITION_COLUMNS), path)
 
 
 def log_exclusions(excluded: "DataFrame") -> dict[str, int]:
@@ -270,7 +270,7 @@ def log_exclusions(excluded: "DataFrame") -> dict[str, int]:
 def load_fact_sales(spark: "SparkSession", config: PipelineConfig) -> dict[str, int]:
     """Rebuild gold.fact_sales and return row counts."""
     def read(layer: str, table: str) -> "DataFrame":
-        return spark.read.format("delta").load(config.table_path(layer, table))
+        return read_table(spark, config.table_path(layer, table))
 
     fact, excluded = build_fact_sales(
         read("silver", "order_items"), read("silver", "orders"),
@@ -278,7 +278,7 @@ def load_fact_sales(spark: "SparkSession", config: PipelineConfig) -> dict[str, 
 
     path = config.table_path("gold", "fact_sales")
     write_fact(fact, path)
-    written = spark.read.format("delta").load(path)
+    written = read_table(spark, path)
     stats = {
         "rows": written.count(),
         "unknown_customer": written.where(f"customer_key = {UNKNOWN_KEY}").count(),

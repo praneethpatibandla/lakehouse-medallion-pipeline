@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence
 
+from lakehouse.utils.tables import create_table_if_not_exists
+
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
@@ -124,12 +126,7 @@ def upsert(spark: "SparkSession", df: "DataFrame", path: str, keys: Sequence[str
     The table is created (empty, with `df`'s schema) if it does not exist,
     so the first run and every later run use the same MERGE code path.
     """
-    from delta.tables import DeltaTable
-
-    table = (DeltaTable.createIfNotExists(spark)
-             .location(path)
-             .addColumns(df.schema)
-             .execute())
+    table = create_table_if_not_exists(spark, path, df.schema)
     version_before = current_version(table)
     update_when = newer_condition(sequence_column) if sequence_column else None
     (table.alias(TARGET_ALIAS)

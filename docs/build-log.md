@@ -1072,3 +1072,97 @@ LAKEHOUSE_REQUIRE_SPARK=1 pytest -q -rs        # same tests as CI: errors if Spa
 ```
 Then open the **Actions** tab on GitHub to see the run for this commit, or
 click **Run workflow** on the CI workflow to start one by hand.
+
+## 20. Databricks setup notebook (catalog, schemas, volume) and bronze + silver notebooks
+
+**What:** The pipeline can now store its tables either as Delta folders
+(local) or as Unity Catalog managed tables (Databricks), with one setting.
+`PipelineConfig` has a new optional `catalog`; when it is set,
+`table_path("silver", "orders")` returns `workspace.silver.orders` instead
+of a folder. A new module, `lakehouse/utils/tables.py`, has the only code
+that cares about the difference (`read_table`, `save_table`,
+`table_exists`, `delta_table`, `create_table_if_not_exists`, `sql_ref`), and
+every job now uses it instead of `.load()` / `.save()` / `DeltaTable.forPath()`.
+`lakehouse/utils/unity_catalog.py` describes the Databricks layout (schemas,
+landing volume) as SQL strings and a config. Three notebooks were added in
+`databricks/` (plus `_common`, shared by all of them):
+
+| Notebook | Does |
+|---|---|
+| `00_setup` | creates schemas `raw`, `bronze`, `silver`, `gold`, `quarantine`, `audit` and the volume `raw.files`; writes sample data into the volume |
+| `01_bronze` | plans the new batch dates and loads each into bronze |
+| `02_silver` | loads the same dates into the four silver tables and moves the watermark |
+
+The runner was split slightly so the notebooks can reuse it:
+`plan_pending_run` (landing + watermarks -> plan), `load_bronze_batch`,
+`load_silver_batch`, and `run_stage` (was `_run_stage`). New pure function
+`missing_bronze_sources` is tested in `tests/test_pipeline.py`; the table
+references and the Unity Catalog layout are tested in `tests/test_tables.py`.
+
+**Why:**
+- **One codebase, two platforms.** Copying the transforms into notebooks
+  would give two versions that slowly drift apart, and the notebook copy
+  would have no tests. Instead the notebooks are thin: they set parameters
+  and call the same tested functions the local runner calls. This is how
+  teams keep notebooks maintainable: logic in Python modules, notebooks as
+  the entry points.
+- **Managed tables, not paths, on Unity Catalog.** Locally a table is a
+  folder. On Unity Catalog a table is an object with a three-level name
+  (`catalog.schema.table`); Databricks stores the files and enforces
+  permissions, lineage and auditing on the name. Writing Delta files to a
+  path would bypass all of that. `saveAsTable(name)` creates a managed table on
+  the first write, and every writer option already used (`replaceWhere`,
+  `overwriteSchema`, `partitionBy`) works the same way with it.
+- **Volumes are for files, tables are for tables.** Source files are not
+  tables, so they go in a Unity Catalog volume (`/Volumes/<catalog>/raw/files`).
+  Volumes look like a normal folder to Python and Spark, which is why the
+  data generator and the landing-zone scan (`landed_dates`) work unchanged.
+- **Schemas map to layers.** `bronze`, `silver` and `gold` become schemas,
+  so the medallion architecture is visible in Catalog Explorer, and access
+  can be granted per layer (e.g. analysts get `SELECT` on `gold` only).
+- **The catalog is a parameter.** Free Edition comes with a `workspace`
+  catalog, which is the default. Pointing the same notebooks at another
+  catalog (say `dev` vs `prod`) is the standard way to separate
+  environments on Unity Catalog. The name is validated because it ends up
+  inside SQL statements.
+- **Setup is idempotent.** Every statement is `CREATE ... IF NOT EXISTS`, so
+  running the setup twice is harmless, like everything else in this
+  pipeline.
+- **Two notebooks, one plan, one watermark.** Bronze and silver are separate
+  notebooks (so a job can show them as separate tasks), but both ask
+  `plan_pending_run` which dates to process. Bronze does not move the
+  watermark; silver moves it after each date. So both see the same pending
+  dates, and a failed silver run is retried next time.
+- **Guarding the hand-off.** If silver ran for a date bronze never loaded,
+  it would merge nothing, mark the date as done, and the watermark would
+  skip that day forever. `missing_bronze_sources` checks the ingestion log
+  (newest attempt per source) and refuses such a date. Checking upstream
+  completion before marking work done is a general orchestration rule.
+
+**Try it on Databricks Free Edition** (I could not run this; please report
+anything that fails):
+1. Sign in at the Databricks Free Edition workspace. In the left sidebar
+   click **Workspace**, open your user folder, then **Create > Git folder**.
+   Paste `https://github.com/praneethpatibandla/lakehouse-medallion-pipeline`
+   and click **Create Git folder**. (Later, use the branch button and
+   **Pull** to get new commits.)
+2. Open `databricks/00_setup`. In the compute selector at the top right
+   choose **Serverless**. Click **Run all**. The widgets at the top default
+   to catalog `workspace`, start date `2026-11-01` and 3 days.
+3. Click **Catalog** in the sidebar: under `workspace` you should see the
+   schemas `raw`, `bronze`, `silver`, `gold`, `quarantine`, `audit`, and the
+   volume `raw > files` with a `landing/` folder inside.
+4. Open `databricks/01_bronze`, **Run all**. The table at the end lists one
+   row per source and date. Then open `databricks/02_silver`, **Run all**.
+5. Run both again: they print "nothing new". To see incremental loading,
+   set `start_date` to `2026-11-04` and `days` to `1` in `00_setup`, run its
+   last cell only, then run `01_bronze` and `02_silver` again.
+6. If you edit code under `src/` in the Git folder, click **Detach and
+   re-attach** (or restart Python with `dbutils.library.restartPython()`) so
+   the notebooks import the new version.
+
+Locally nothing changes; check that everything still works with:
+```bash
+pytest -q
+PYTHONPATH=src python -m lakehouse.pipeline --dry-run
+```

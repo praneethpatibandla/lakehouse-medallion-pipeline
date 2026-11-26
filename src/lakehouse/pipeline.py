@@ -41,7 +41,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 from lakehouse.bronze.audit import DEFAULT_MAX_QUARANTINE_RATIO
-from lakehouse.bronze.ingest import SOURCES, ingest
+from lakehouse.bronze.audit import SUCCESS as INGEST_SUCCESS
+from lakehouse.bronze.ingest import AUDIT_TABLE, SOURCES, ingest
 from lakehouse.gold.aggregates import build_aggregates
 from lakehouse.gold.dimensions import build_dimensions
 from lakehouse.gold.facts import load_fact_sales
@@ -53,6 +54,7 @@ from lakehouse.silver.orders import load_silver_orders
 from lakehouse.silver.products import load_silver_products
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table, table_exists
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -159,6 +161,24 @@ def late_batch_dates(available: Iterable[date], processed: set[date],
     return sorted(d for d in available if d <= mark and d not in processed)
 
 
+def missing_bronze_sources(audit_rows: Iterable[tuple[str, date, str, datetime]],
+                           batch_date: date) -> list[str]:
+    """Return the sources whose bronze load for `batch_date` is not done.
+
+    `audit_rows` are (source, batch_date, status, started_at) rows from the
+    ingestion log. Only the newest attempt per source counts: a source that
+    loaded once and then failed on a re-run is not ready. Used by the
+    Databricks silver notebook, which runs separately from bronze and must
+    not merge (and mark as done) a day that bronze never loaded.
+    """
+    latest: dict[str, tuple[datetime, str]] = {}
+    for source, day, status, started_at in audit_rows:
+        if day == batch_date and (source not in latest or started_at > latest[source][0]):
+            latest[source] = (started_at, status)
+    return [name for name in BRONZE_ORDER
+            if name not in latest or latest[name][1] != INGEST_SUCCESS]
+
+
 @dataclass(frozen=True)
 class RunPlan:
     """What one run will do."""
@@ -244,19 +264,27 @@ def read_run_state(spark: "SparkSession", config: PipelineConfig) -> list[tuple[
     The table holds a few rows per day, so collecting it to the driver is
     fine and keeps the watermark logic in plain, tested Python.
     """
-    from delta.tables import DeltaTable
-
     path = config.table_path("audit", RUNS_TABLE)
-    if not DeltaTable.isDeltaTable(spark, path):
+    if not table_exists(spark, path):
         return []  # first run ever: no watermark yet
-    rows = spark.read.format("delta").load(path).select("stage", "batch_date", "status").collect()
+    rows = read_table(spark, path).select("stage", "batch_date", "status").collect()
     return [(r["stage"], r["batch_date"], r["status"]) for r in rows]
+
+
+def read_ingestion_log(spark: "SparkSession", config: PipelineConfig
+                       ) -> list[tuple[str, date, str, datetime]]:
+    """Return (source, batch_date, status, started_at) for every bronze load."""
+    path = config.table_path("audit", AUDIT_TABLE)
+    if not table_exists(spark, path):
+        return []
+    rows = read_table(spark, path).select("source", "batch_date", "status", "started_at").collect()
+    return [(r["source"], r["batch_date"], r["status"], r["started_at"]) for r in rows]
 
 
 def write_run_record(spark: "SparkSession", config: PipelineConfig, record: RunRecord) -> None:
     """Append one record to the runs table (created on first write)."""
     df = spark.createDataFrame([record.to_row()], schema=runs_schema())
-    df.write.format("delta").mode("append").save(config.table_path("audit", RUNS_TABLE))
+    save_table(df.write.format("delta").mode("append"), config.table_path("audit", RUNS_TABLE))
 
 
 def process_batch(spark: "SparkSession", config: PipelineConfig, batch_date: date,
@@ -266,8 +294,19 @@ def process_batch(spark: "SparkSession", config: PipelineConfig, batch_date: dat
     Every step is idempotent on its own (partition replace in bronze, MERGE
     in silver), so retrying a date after a failure halfway is safe.
     """
+    load_bronze_batch(spark, config, batch_date, run_id, max_quarantine_ratio)
+    load_silver_batch(spark, config, batch_date)
+
+
+def load_bronze_batch(spark: "SparkSession", config: PipelineConfig, batch_date: date,
+                      run_id: str, max_quarantine_ratio: float = DEFAULT_MAX_QUARANTINE_RATIO) -> None:
+    """Ingest every source of one batch date into bronze."""
     for name in BRONZE_ORDER:
         ingest(spark, config, name, batch_date, run_id, max_quarantine_ratio)
+
+
+def load_silver_batch(spark: "SparkSession", config: PipelineConfig, batch_date: date) -> None:
+    """Load one batch date from bronze into the four silver tables."""
     load_silver_customers(spark, config, batch_date)
     load_silver_products(spark, config, batch_date)
     load_silver_orders(spark, config, batch_date)
@@ -288,7 +327,7 @@ def build_gold_layer(spark: "SparkSession", config: PipelineConfig) -> None:
     run_suites(spark, config)
 
 
-def _run_stage(spark: "SparkSession", config: PipelineConfig, record: RunRecord, action) -> None:
+def run_stage(spark: "SparkSession", config: PipelineConfig, record: RunRecord, action) -> None:
     """Run one stage and record its outcome, re-raising any failure."""
     try:
         action()
@@ -313,18 +352,43 @@ def run_pipeline(spark: "SparkSession", config: PipelineConfig, plan: RunPlan, r
         # `day=batch_date` binds the current date now. The lambda is called
         # straight away, but a plain closure over a loop variable is a classic
         # bug if it ever gets called later (it would see the last date).
-        _run_stage(spark, config, RunRecord(run_id, STAGE_SILVER, batch_date),
+        run_stage(spark, config, RunRecord(run_id, STAGE_SILVER, batch_date),
                    lambda day=batch_date: process_batch(spark, config, day, run_id,
                                                         max_quarantine_ratio))
 
     if plan.build_gold:
         logger.info("Run %s: rebuilding gold through %s", run_id, plan.gold_through)
-        _run_stage(spark, config, RunRecord(run_id, STAGE_GOLD, plan.gold_through),
+        run_stage(spark, config, RunRecord(run_id, STAGE_GOLD, plan.gold_through),
                    lambda: build_gold_layer(spark, config))
 
     if maintenance:
         # Not part of the watermark: skipping or failing it never makes data wrong.
         run_maintenance(spark, config)
+
+
+def plan_pending_run(spark: "SparkSession", config: PipelineConfig, until: date | None = None,
+                     max_batches: int | None = None) -> RunPlan:
+    """Look at the landing zone and the watermarks, and plan the next run.
+
+    Used by the command line below and by the Databricks notebooks, so both
+    pick the same dates.
+    """
+    by_source = {name: landed_dates(config.landing_path, name) for name in DAILY_SOURCES}
+    available = complete_batch_dates(by_source)
+    for day in incomplete_batch_dates(by_source):
+        logger.warning("Batch %s is incomplete (not every source has landed); skipped", day)
+
+    state = read_run_state(spark, config)
+    silver_mark = watermark(state, STAGE_SILVER)
+    gold_mark = watermark(state, STAGE_GOLD)
+    for day in late_batch_dates(available, processed_dates(state), silver_mark):
+        logger.warning("Batch %s landed after the watermark (%s) passed it and will not be "
+                       "processed automatically; backfill it on purpose", day, silver_mark)
+
+    plan = plan_run(available, silver_mark, gold_mark, until, max_batches)
+    logger.info("Watermarks: silver=%s gold=%s. Plan: %s",
+                silver_mark, gold_mark, describe_plan(plan))
+    return plan
 
 
 def describe_plan(plan: RunPlan) -> str:
@@ -348,23 +412,9 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     config = load_config()
-    by_source = {name: landed_dates(config.landing_path, name) for name in DAILY_SOURCES}
-    available = complete_batch_dates(by_source)
-    for day in incomplete_batch_dates(by_source):
-        logger.warning("Batch %s is incomplete (not every source has landed); skipped", day)
-
     spark = get_spark("pipeline", config)
     try:
-        state = read_run_state(spark, config)
-        silver_mark = watermark(state, STAGE_SILVER)
-        gold_mark = watermark(state, STAGE_GOLD)
-        for day in late_batch_dates(available, processed_dates(state), silver_mark):
-            logger.warning("Batch %s landed after the watermark (%s) passed it and will not be "
-                           "processed automatically; backfill it on purpose", day, silver_mark)
-
-        plan = plan_run(available, silver_mark, gold_mark, args.until, args.max_batches)
-        logger.info("Watermarks: silver=%s gold=%s. Plan: %s",
-                    silver_mark, gold_mark, describe_plan(plan))
+        plan = plan_pending_run(spark, config, args.until, args.max_batches)
         if args.dry_run:
             return
         if not plan.batch_dates and not plan.build_gold and not args.maintenance:

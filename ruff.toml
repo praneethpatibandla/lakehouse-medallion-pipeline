@@ -10,3 +10,9 @@ select = ["E", "F", "W", "B"]
 # lazily so pure-Python modules work without it. pyupgrade (UP) is not
 # selected for that reason.
 
+
+[lint.per-file-ignores]
+# Databricks notebooks use names the notebook provides (spark, dbutils,
+# display) or that `%run ./_common` defines (config, catalog), and import
+# after the cell that puts src/ on sys.path.
+"databricks/*" = ["F821", "E402"]

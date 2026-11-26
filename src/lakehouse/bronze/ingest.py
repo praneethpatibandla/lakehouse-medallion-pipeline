@@ -41,6 +41,7 @@ from lakehouse.bronze.audit import (
 from lakehouse.bronze.schemas import CORRUPT_RECORD_COLUMN, SOURCE_COLUMNS, spark_schema
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -142,19 +143,19 @@ def write_partition(df: "DataFrame", table_path: str, batch_date: date) -> None:
     Used for bronze and quarantine tables. An empty DataFrame still runs the
     replace, which clears rows left by an earlier run of the same day.
     """
-    (
+    writer = (
         df.write.format("delta")
         .mode("overwrite")
         # Without replaceWhere, mode("overwrite") would wipe every other day.
         .option("replaceWhere", f"_batch_date = '{batch_date.isoformat()}'")
         .partitionBy("_batch_date")
-        .save(table_path)
     )
+    save_table(writer, table_path)
 
 
 def _partition_count(spark: "SparkSession", table_path: str, batch_date: date) -> int:
     """Count one batch date's rows in a Delta table."""
-    return (spark.read.format("delta").load(table_path)
+    return (read_table(spark, table_path)
             .where(f"_batch_date = '{batch_date.isoformat()}'").count())
 
 

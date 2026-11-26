@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 
 import pytest
 
@@ -16,6 +16,7 @@ from lakehouse.pipeline import (
     incomplete_batch_dates,
     landed_dates,
     late_batch_dates,
+    missing_bronze_sources,
     parse_batch_folder,
     plan_run,
     processed_dates,
@@ -109,6 +110,19 @@ def test_run_record_rows():
 
     with pytest.raises(ValueError):
         RunRecord("run-1", STAGE_SILVER, D1).to_row()
+
+
+def test_missing_bronze_sources_uses_newest_attempt():
+    t1, t2 = datetime(2026, 11, 2, 6), datetime(2026, 11, 2, 7)
+    rows = [(name, D1, SUCCESS, t1) for name in BRONZE_ORDER]
+    assert missing_bronze_sources(rows, D1) == []
+    # Nothing loaded for D2 yet: every source is missing, in load order.
+    assert missing_bronze_sources(rows, D2) == list(BRONZE_ORDER)
+    # orders loaded, then a re-run failed: orders is no longer ready.
+    rows.append(("orders", D1, FAILED, t2))
+    assert missing_bronze_sources(rows, D1) == ["orders"]
+    # Row order does not matter, only started_at does.
+    assert missing_bronze_sources(list(reversed(rows)), D1) == ["orders"]
 
 
 def test_reference_data_loads_before_daily_sources():

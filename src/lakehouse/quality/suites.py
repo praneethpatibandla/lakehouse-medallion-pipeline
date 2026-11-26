@@ -42,6 +42,7 @@ from lakehouse.quality.checks import (
 from lakehouse.silver.transforms import VALID_ORDER_STATUSES
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -156,7 +157,7 @@ def write_results(spark: "SparkSession", rows: list[tuple], path: str) -> None:
     schema = ("run_id string, checked_at timestamp, table_name string, check_name string, "
               "severity string, passed boolean, failed_rows bigint, total_rows bigint, "
               "failure_ratio double, max_failure_ratio double")
-    spark.createDataFrame(rows, schema).write.format("delta").mode("append").save(path)
+    save_table(spark.createDataFrame(rows, schema).write.format("delta").mode("append"), path)
 
 
 def run_suites(spark: "SparkSession", config: PipelineConfig,
@@ -172,7 +173,7 @@ def run_suites(spark: "SparkSession", config: PipelineConfig,
     def load(name: str) -> "DataFrame":
         if name not in cache:
             layer, table = name.split(".", 1)
-            cache[name] = spark.read.format("delta").load(config.table_path(layer, table))
+            cache[name] = read_table(spark, config.table_path(layer, table))
         return cache[name]
 
     results: list[CheckResult] = []

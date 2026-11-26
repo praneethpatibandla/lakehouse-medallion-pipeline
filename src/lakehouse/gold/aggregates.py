@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Iterable
 from lakehouse.gold.dimensions import UNKNOWN_KEY
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table
 
 if TYPE_CHECKING:
     from pyspark.sql import Column, DataFrame, SparkSession
@@ -211,16 +212,15 @@ def build_customer_lifetime_value(fact: "DataFrame",
 
 def write_aggregate(df: "DataFrame", path: str) -> None:
     """Replace the whole table in one atomic Delta commit."""
-    (df.write.format("delta")
-       .mode("overwrite")
-       .option("overwriteSchema", "true")
-       .save(path))
+    save_table(df.write.format("delta")
+               .mode("overwrite")
+               .option("overwriteSchema", "true"), path)
 
 
 def build_aggregates(spark: "SparkSession", config: PipelineConfig) -> dict[str, int]:
     """Rebuild both aggregate tables and return their row counts."""
     def read(table: str) -> "DataFrame":
-        return spark.read.format("delta").load(config.table_path("gold", table))
+        return read_table(spark, config.table_path("gold", table))
 
     fact = read("fact_sales")
     tables = {
@@ -232,7 +232,7 @@ def build_aggregates(spark: "SparkSession", config: PipelineConfig) -> dict[str,
     for name, df in tables.items():
         path = config.table_path("gold", name)
         write_aggregate(df, path)
-        counts[name] = spark.read.format("delta").load(path).count()
+        counts[name] = read_table(spark, path).count()
         logger.info("gold.%s: %d rows", name, counts[name])
     return counts
 

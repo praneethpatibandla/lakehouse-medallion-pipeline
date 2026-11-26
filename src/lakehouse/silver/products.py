@@ -36,6 +36,7 @@ from lakehouse.silver.merge import MergeStats, deduplicate_latest, split_null_ke
 from lakehouse.silver.transforms import clean_products
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -63,7 +64,7 @@ def load_silver_products(spark: "SparkSession", config: PipelineConfig,
     """Merge one day's product snapshot from bronze into silver."""
     from pyspark.sql import functions as F
 
-    bronze = (spark.read.format("delta").load(config.table_path("bronze", TABLE))
+    bronze = (read_table(spark, config.table_path("bronze", TABLE))
               .where(F.col("_batch_date") == F.lit(batch_date)))
     staged, rejected = prepare_products(bronze)
 

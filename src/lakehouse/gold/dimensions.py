@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, save_table
 
 if TYPE_CHECKING:
     from pyspark.sql import Column, DataFrame, SparkSession
@@ -170,17 +171,16 @@ def write_dimension(df: "DataFrame", path: str) -> None:
     `overwriteSchema` lets a rebuild add or rename columns; without it Delta
     rejects a schema change on overwrite.
     """
-    (df.write.format("delta")
-       .mode("overwrite")
-       .option("overwriteSchema", "true")
-       .save(path))
+    save_table(df.write.format("delta")
+               .mode("overwrite")
+               .option("overwriteSchema", "true"), path)
 
 
 def build_dimensions(spark: "SparkSession", config: PipelineConfig,
                      start: date = DEFAULT_START_DATE,
                      end: date = DEFAULT_END_DATE) -> dict[str, int]:
     """Build all three dimensions and return their row counts."""
-    silver = {t: spark.read.format("delta").load(config.table_path("silver", t))
+    silver = {t: read_table(spark, config.table_path("silver", t))
               for t in ("customers", "products")}
     dims = {
         "dim_date": build_dim_date(spark, start, end),
@@ -191,7 +191,7 @@ def build_dimensions(spark: "SparkSession", config: PipelineConfig,
     for name, df in dims.items():
         path = config.table_path("gold", name)
         write_dimension(df, path)
-        counts[name] = spark.read.format("delta").load(path).count()
+        counts[name] = read_table(spark, path).count()
         logger.info("gold.%s: %d rows", name, counts[name])
     return counts
 

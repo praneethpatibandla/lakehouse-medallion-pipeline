@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import delta_table, sql_ref, table_exists
 
 if TYPE_CHECKING:
     from pyspark.sql import SparkSession
@@ -127,14 +128,9 @@ def check_zorder_columns(zorder_by: Sequence[str], columns: Iterable[str],
         raise ValueError(f"Z-ORDER columns {partitioned} are partition columns")
 
 
-def _table_ref(path: str) -> str:
-    """Path-based table reference, e.g. delta.`/data/silver/orders`."""
-    return f"delta.`{path}`"
-
-
 def optimize_sql(path: str, zorder_by: Sequence[str] = ()) -> str:
     """Return the OPTIMIZE statement, with ZORDER BY when columns are given."""
-    sql = f"OPTIMIZE {_table_ref(path)}"
+    sql = f"OPTIMIZE {sql_ref(path)}"
     if zorder_by:
         sql += " ZORDER BY (" + ", ".join(f"`{c}`" for c in zorder_by) + ")"
     return sql
@@ -142,7 +138,7 @@ def optimize_sql(path: str, zorder_by: Sequence[str] = ()) -> str:
 
 def vacuum_sql(path: str, retain_hours: int, dry_run: bool = False) -> str:
     """Return the VACUUM statement. DRY RUN lists files without deleting them."""
-    sql = f"VACUUM {_table_ref(path)} RETAIN {validate_retention(retain_hours)} HOURS"
+    sql = f"VACUUM {sql_ref(path)} RETAIN {validate_retention(retain_hours)} HOURS"
     return sql + " DRY RUN" if dry_run else sql
 
 
@@ -178,9 +174,7 @@ def parse_optimize_metrics(metrics: dict[str, str] | None) -> OptimizeStats:
 def optimize_table(spark: "SparkSession", path: str,
                    zorder_by: Sequence[str] = ()) -> OptimizeStats:
     """Compact (and optionally Z-ORDER) one Delta table."""
-    from delta.tables import DeltaTable
-
-    table = DeltaTable.forPath(spark, path)
+    table = delta_table(spark, path)
     detail = table.detail().select("partitionColumns").first()
     check_zorder_columns(zorder_by, table.toDF().columns, detail["partitionColumns"])
 
@@ -210,14 +204,12 @@ def run_maintenance(spark: "SparkSession", config: PipelineConfig,
     One table failing does not stop the others: the error is logged and the
     job fails at the end, so every table still gets its maintenance.
     """
-    from delta.tables import DeltaTable
-
     validate_retention(retain_hours)
     results: dict[str, OptimizeStats] = {}
     failed: list[str] = []
     for spec in tables:
         path = config.table_path(spec.layer, spec.table)
-        if not DeltaTable.isDeltaTable(spark, path):
+        if not table_exists(spark, path):
             logger.info("%s: no Delta table at %s, skipped", spec.name, path)
             continue
         try:

@@ -33,6 +33,7 @@ from lakehouse.silver.merge import MergeStats, deduplicate_latest, split_null_ke
 from lakehouse.silver.transforms import append_dq_issues, clean_order_items
 from lakehouse.utils.config import PipelineConfig, load_config
 from lakehouse.utils.logger import get_logger
+from lakehouse.utils.tables import read_table, table_exists
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
@@ -146,14 +147,12 @@ def prepare_order_items(bronze: "DataFrame", products: "DataFrame",
 
 def read_silver_table(spark: "SparkSession", config: PipelineConfig, table: str) -> "DataFrame":
     """Read an upstream silver table, with a clear error if it is missing."""
-    from delta.tables import DeltaTable
-
     path = config.table_path("silver", table)
-    if not DeltaTable.isDeltaTable(spark, path):
+    if not table_exists(spark, path):
         raise MissingUpstreamTableError(
             f"silver.{table} not found at {path}. Run `python -m lakehouse.silver.{table}` "
             "for this batch date before silver.order_items.")
-    return spark.read.format("delta").load(path)
+    return read_table(spark, path)
 
 
 def load_silver_order_items(spark: "SparkSession", config: PipelineConfig,
@@ -163,7 +162,7 @@ def load_silver_order_items(spark: "SparkSession", config: PipelineConfig,
 
     products = read_silver_table(spark, config, "products")
     orders = read_silver_table(spark, config, "orders")
-    bronze = (spark.read.format("delta").load(config.table_path("bronze", TABLE))
+    bronze = (read_table(spark, config.table_path("bronze", TABLE))
               .where(F.col("_batch_date") == F.lit(batch_date)))
     staged, rejected = prepare_order_items(bronze, products, orders)
 

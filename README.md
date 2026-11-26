@@ -32,10 +32,11 @@ src/lakehouse/
   silver/    cleaning, deduplication, merges
   gold/      dimensions, facts, aggregates
   quality/   data quality checks
-  utils/     config, logging, Spark session
+  utils/     config, logging, Spark session, table access, Unity Catalog layout
   pipeline.py      end-to-end runner with incremental watermarks
   maintenance.py   OPTIMIZE / Z-ORDER / VACUUM job
 data_generator/   creates synthetic source data
+databricks/       notebooks that run the same code on Databricks
 tests/            unit tests
 docs/             build log and design notes
 data/             local data, generated at runtime (not committed)
@@ -195,6 +196,23 @@ PYTHONPATH=src python -m lakehouse.maintenance
 PYTHONPATH=src python -m lakehouse.maintenance --tables silver.orders gold.fact_sales
 PYTHONPATH=src python -m lakehouse.maintenance --vacuum-dry-run
 ```
+
+## Run on Databricks (Free Edition)
+
+The notebooks in `databricks/` run the same code on Databricks serverless
+compute. Tables become Unity Catalog managed tables named
+`<catalog>.<layer>.<table>` (default catalog: `workspace`), and the landing
+files live in the volume `/Volumes/<catalog>/raw/files/landing/`.
+
+1. In your workspace: **Workspace > Create > Git folder**, paste this
+   repository's URL.
+2. Open `databricks/00_setup`, attach **Serverless** compute, **Run all**.
+   It creates the schemas and the volume, and writes three days of sample data.
+3. Run `databricks/01_bronze`, then `databricks/02_silver`.
+
+Both notebooks pick the batch dates newer than the watermark, just like the
+local runner, so running them again only processes new days. See build log
+step 20 for details.
 
 ## Run the tests
 
