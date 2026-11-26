@@ -12,7 +12,8 @@ fast, pure-Python tests can be run on their own:
     pytest                    # everything
 
 When pyspark, delta-spark or Java is missing, Spark tests are skipped with
-the reason shown in `pytest -rs`, instead of failing.
+the reason shown in `pytest -rs`, instead of failing. CI sets
+LAKEHOUSE_REQUIRE_SPARK=1, which turns those skips into failures.
 """
 
 from __future__ import annotations
@@ -25,8 +26,27 @@ import pytest
 from lakehouse.utils.config import PipelineConfig
 
 
+# CI sets this so that a broken Spark install FAILS the build. Without it, a
+# missing Java or a bad pip install would skip every Spark test and the
+# build would still be green while testing almost nothing.
+REQUIRE_SPARK = os.environ.get("LAKEHOUSE_REQUIRE_SPARK") == "1"
+
+
 def _java_available() -> bool:
     return bool(shutil.which("java") or os.environ.get("JAVA_HOME"))
+
+
+def _skip_or_fail(reason: str) -> None:
+    if REQUIRE_SPARK:
+        pytest.fail(f"{reason} (LAKEHOUSE_REQUIRE_SPARK=1, so this is an error)")
+    pytest.skip(reason)
+
+
+def _require_module(name: str) -> None:
+    try:
+        __import__(name)
+    except ImportError:
+        _skip_or_fail(f"{name} is not installed")
 
 
 def make_config(data_root) -> PipelineConfig:
@@ -40,10 +60,10 @@ def make_config(data_root) -> PipelineConfig:
 @pytest.fixture(scope="session")
 def spark(tmp_path_factory):
     """One Delta-enabled local SparkSession shared by every test."""
-    pytest.importorskip("pyspark")
-    pytest.importorskip("delta")
+    _require_module("pyspark")
+    _require_module("delta")
     if not _java_available():
-        pytest.skip("Java is not installed (Spark needs Java 11 or 17)")
+        _skip_or_fail("Java is not installed (Spark needs Java 11 or 17)")
     # A Databricks variable left in the environment would make get_spark
     # return a plain session without the local Delta settings.
     os.environ.pop("DATABRICKS_RUNTIME_VERSION", None)

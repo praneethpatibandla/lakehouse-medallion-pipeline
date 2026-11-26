@@ -99,10 +99,10 @@ def test_failed_gold_is_retried_without_new_batches():
 def test_run_record_rows():
     ok = RunRecord("run-1", STAGE_SILVER, D1).succeed().to_row()
     assert len(ok) == len(RUN_COLUMNS)
-    assert dict(zip(RUN_COLUMNS, ok))["status"] == SUCCESS
+    assert dict(zip(RUN_COLUMNS, ok, strict=True))["status"] == SUCCESS
 
     failed = dict(zip(RUN_COLUMNS, RunRecord("run-1", STAGE_GOLD, D1)
-                      .fail(RuntimeError("x" * 5000)).to_row()))
+                      .fail(RuntimeError("x" * 5000)).to_row(), strict=True))
     assert failed["status"] == FAILED
     assert failed["error_message"].startswith("RuntimeError: ")
     assert len(failed["error_message"]) == 1000

@@ -126,8 +126,8 @@ def test_result_rows_follow_column_order():
     result = evaluate("gold.fact_sales", unique("order_id"), 2, 8)
     (row,) = result_rows([result], "run1", datetime(2026, 11, 23))
     assert len(row) == len(RESULT_COLUMNS)
-    assert dict(zip(RESULT_COLUMNS, row))["failure_ratio"] == 0.25
-    assert dict(zip(RESULT_COLUMNS, row))["severity"] == ERROR
+    assert dict(zip(RESULT_COLUMNS, row, strict=True))["failure_ratio"] == 0.25
+    assert dict(zip(RESULT_COLUMNS, row, strict=True))["severity"] == ERROR
 
 
 # ---------------------------------------------------------------------------

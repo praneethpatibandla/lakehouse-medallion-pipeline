@@ -1,0 +1,73 @@
+# Continuous integration: lint and run every test on each push and pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:   # "Run workflow" button in the Actions tab
+
+# A newer push to the same branch cancels the run that is still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # Only ruff is needed here, so this job finishes in seconds and a style
+      # problem is reported without waiting for Spark to install.
+      - run: pip install "$(grep '^ruff==' requirements-dev.txt)"
+      - run: ruff check --output-format=github .
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }}, Spark + Delta)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported version and the one used for development.
+        python-version: ["3.10", "3.11"]
+    env:
+      # Fail, do not skip, if Spark cannot start (see tests/conftest.py).
+      LAKEHOUSE_REQUIRE_SPARK: "1"
+      PYTHONPATH: src
+    steps:
+      - uses: actions/checkout@v4
+
+      # Spark runs on the JVM; 17 is supported by Spark 3.5.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements*.txt
+
+      # configure_spark_with_delta_pip downloads the Delta jars from Maven
+      # into ~/.ivy2 on first use. Caching them saves time and avoids failing
+      # when Maven Central is slow.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.ivy2
+          key: ivy-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+
+      - run: pip install -r requirements-dev.txt
+
+      # -rs lists any skipped test with its reason; --durations shows the
+      # slowest tests so a creeping suite is noticed early.
+      - run: pytest -q -rs --durations=5

@@ -310,8 +310,12 @@ def run_pipeline(spark: "SparkSession", config: PipelineConfig, plan: RunPlan, r
     """
     for batch_date in plan.batch_dates:
         logger.info("Run %s: loading batch %s into bronze and silver", run_id, batch_date)
+        # `day=batch_date` binds the current date now. The lambda is called
+        # straight away, but a plain closure over a loop variable is a classic
+        # bug if it ever gets called later (it would see the last date).
         _run_stage(spark, config, RunRecord(run_id, STAGE_SILVER, batch_date),
-                   lambda: process_batch(spark, config, batch_date, run_id, max_quarantine_ratio))
+                   lambda day=batch_date: process_batch(spark, config, day, run_id,
+                                                        max_quarantine_ratio))
 
     if plan.build_gold:
         logger.info("Run %s: rebuilding gold through %s", run_id, plan.gold_through)

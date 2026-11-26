@@ -1017,3 +1017,58 @@ pytest -q -m spark -rs                      # Spark tests, show skip reasons
 pytest tests/test_pipeline.py -v            # runner: planning + end-to-end
 pytest --durations=5                        # the slowest tests
 ```
+
+## 19. GitHub Actions CI: lint and tests
+
+**What:** Added a GitHub Actions workflow (`.github/workflows/ci.yml`) with
+two jobs: `lint` runs `ruff check`, and `test` installs Java 17 and the
+pinned requirements and runs the whole pytest suite, Spark tests included,
+on Python 3.10 and 3.11. It runs on every push to `main`, on pull requests
+and on demand. Lint settings are in `ruff.toml`, and the lint tool is pinned
+in a new `requirements-dev.txt`. The shared Spark fixture now fails instead
+of skipping when `LAKEHOUSE_REQUIRE_SPARK=1`, which CI sets. Fixing the lint
+findings also fixed a closure over a loop variable in the pipeline runner.
+
+**Why:**
+- **CI is the team's shared definition of "works".** Tests that only run on
+  one laptop prove little: they may depend on something installed there, or
+  simply not be run before a push. CI runs them on a clean machine for every
+  change, and the badge in the README shows the current state.
+- **Lint catches bugs, not just style.** Rules are picked for value: pyflakes
+  (`F`) finds unused imports and undefined names, bugbear (`B`) finds likely
+  bugs. It found one here: a `lambda` in a `for` loop that captured
+  `batch_date`. Python closures look up the variable when called, not when
+  created, so if the lambda were ever called after the loop moved on, it
+  would process the wrong day. It is called immediately today, so it was
+  not a live bug, but `lambda day=batch_date:` binds the value now and makes
+  the code safe to change. Explaining this is a common interview question.
+- **Two jobs, fast feedback first.** The lint job installs only ruff and
+  finishes in seconds; the test job has to install Spark and download the
+  Delta jars. Splitting them means a typo is reported in seconds, and both
+  results are shown separately on the pull request.
+- **A skipped test is a silent pass.** Locally, Spark tests skip when Java
+  is missing so the fast tests are still usable. In CI that same behaviour
+  would be dangerous: a broken install would skip 26 tests and the build
+  would still be green. `LAKEHOUSE_REQUIRE_SPARK=1` turns those skips into
+  errors, so green really means "every test ran".
+- **Reproducible environment.** The runner installs the exact pinned
+  versions (`pyspark`, `delta-spark`, `ruff`), the same Java major version
+  Spark supports, and tests the oldest supported Python (3.10) as well as
+  the current one. `fail-fast: false` lets both versions finish so you see
+  whether a failure is version-specific.
+- **Caching keeps it quick and less flaky.** pip downloads and the Delta
+  jars (stored by Spark in `~/.ivy2`) are cached, keyed on the requirement
+  files, so a dependency change automatically refreshes the cache.
+- **Small safety settings.** `permissions: contents: read` gives the
+  workflow token the least access it needs, `timeout-minutes` stops a hung
+  Spark job from burning minutes, and `concurrency` cancels an outdated run
+  when a newer commit is pushed.
+
+**Try it:**
+```bash
+pip install -r requirements-dev.txt
+ruff check .                                   # same lint as CI
+LAKEHOUSE_REQUIRE_SPARK=1 pytest -q -rs        # same tests as CI: errors if Spark cannot start
+```
+Then open the **Actions** tab on GitHub to see the run for this commit, or
+click **Run workflow** on the CI workflow to start one by hand.

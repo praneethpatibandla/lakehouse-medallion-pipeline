@@ -1,5 +1,7 @@
 # lakehouse-medallion-pipeline
 
+[![CI](https://github.com/praneethpatibandla/lakehouse-medallion-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/praneethpatibandla/lakehouse-medallion-pipeline/actions/workflows/ci.yml)
+
 An end-to-end batch data pipeline for e-commerce orders, built with **PySpark**
 and **Delta Lake** using the medallion (bronze / silver / gold) architecture.
 It runs entirely on a laptop, and a later phase runs the same pipeline on
@@ -205,3 +207,14 @@ pytest -q -m spark -rs    # only the Spark / Delta tests, showing skip reasons
 Spark tests share one local SparkSession (see `tests/conftest.py`). They are
 skipped, not failed, when pyspark, delta-spark or Java is missing; `-rs`
 prints why.
+
+Lint with [ruff](https://docs.astral.sh/ruff/) (settings in `ruff.toml`):
+
+```bash
+pip install -r requirements-dev.txt
+ruff check .
+```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the lint and the full test
+suite, Spark tests included, on every push and pull request. In CI a Spark
+test that cannot start fails the build instead of being skipped.

@@ -1,0 +1,12 @@
+# Lint settings for `ruff check .` (run locally and in CI).
+target-version = "py310"
+line-length = 120
+
+[lint]
+# E/W: pycodestyle, F: pyflakes (unused imports, undefined names),
+# B: bugbear (likely bugs such as closures over loop variables).
+select = ["E", "F", "W", "B"]
+# Quoted type hints ("SparkSession") are intentional: pyspark is imported
+# lazily so pure-Python modules work without it. pyupgrade (UP) is not
+# selected for that reason.
+
