@@ -41,7 +41,7 @@ pulled into a workspace with a Git folder. They reuse the logic in
 Catalog volume, and tables are created as managed tables using the
 `catalog.schema.table` three-level namespace.
 - [x] 20. Databricks setup notebook (catalog, schemas, volume) and bronze + silver notebooks
-- [ ] 21. Gold notebook and SQL analysis queries on the gold tables
+- [x] 21. Gold notebook and SQL analysis queries on the gold tables
 - [ ] 22. Databricks job definition that runs the notebooks in order on a schedule
 
 ## Phase 7 - Wrap-up

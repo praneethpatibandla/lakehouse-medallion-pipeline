@@ -13,6 +13,7 @@ from lakehouse.pipeline import (
     RunPlan,
     RunRecord,
     complete_batch_dates,
+    gold_rebuild_target,
     incomplete_batch_dates,
     landed_dates,
     late_batch_dates,
@@ -123,6 +124,24 @@ def test_missing_bronze_sources_uses_newest_attempt():
     assert missing_bronze_sources(rows, D1) == ["orders"]
     # Row order does not matter, only started_at does.
     assert missing_bronze_sources(list(reversed(rows)), D1) == ["orders"]
+
+
+def test_gold_rebuild_target_follows_the_silver_watermark():
+    # Nothing in silver yet: nothing to build, even when forced.
+    assert gold_rebuild_target([]) is None
+    assert gold_rebuild_target([], force=True) is None
+
+    silver_only = [(STAGE_SILVER, D1, SUCCESS), (STAGE_SILVER, D2, SUCCESS)]
+    assert gold_rebuild_target(silver_only) == D2
+
+    # Gold already built through the silver watermark: skip unless forced.
+    up_to_date = silver_only + [(STAGE_GOLD, D2, SUCCESS)]
+    assert gold_rebuild_target(up_to_date) is None
+    assert gold_rebuild_target(up_to_date, force=True) == D2
+
+    # A failed gold attempt does not count, so it is retried.
+    failed_gold = silver_only + [(STAGE_GOLD, D1, SUCCESS), (STAGE_GOLD, D2, FAILED)]
+    assert gold_rebuild_target(failed_gold) == D2
 
 
 def test_reference_data_loads_before_daily_sources():

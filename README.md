@@ -208,11 +208,14 @@ files live in the volume `/Volumes/<catalog>/raw/files/landing/`.
    repository's URL.
 2. Open `databricks/00_setup`, attach **Serverless** compute, **Run all**.
    It creates the schemas and the volume, and writes three days of sample data.
-3. Run `databricks/01_bronze`, then `databricks/02_silver`.
+3. Run `databricks/01_bronze`, then `databricks/02_silver`, then
+   `databricks/03_gold` (dimensions, fact, aggregates and data quality checks).
+4. Open `databricks/04_analysis` and **Run all** for SQL analysis on the gold
+   tables (moving averages, category share, SCD2 point-in-time, and more).
 
-Both notebooks pick the batch dates newer than the watermark, just like the
-local runner, so running them again only processes new days. See build log
-step 20 for details.
+Bronze and silver pick the batch dates newer than the watermark, just like the
+local runner, so running them again only processes new days. Gold rebuilds
+only when silver is ahead of it. See build log steps 20 and 21 for details.
 
 ## Run the tests
 

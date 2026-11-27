@@ -211,6 +211,24 @@ def plan_run(available: Sequence[date], silver_mark: date | None, gold_mark: dat
     return RunPlan(tuple(pending), build_gold, gold_through)
 
 
+def gold_rebuild_target(rows: Iterable[tuple[str, date, str]], force: bool = False) -> date | None:
+    """Return the batch date gold should be rebuilt up to, or None to skip.
+
+    Gold is behind when silver has a newer watermark than gold. Used by the
+    Databricks gold notebook, which runs after silver as its own task, so it
+    decides from the runs table alone (the same rule `plan_run` applies).
+    `force` rebuilds anyway, e.g. after a change to the gold code.
+    Nothing is built before silver has loaded at least one date.
+    """
+    silver_mark = watermark(rows, STAGE_SILVER)
+    gold_mark = watermark(rows, STAGE_GOLD)
+    if silver_mark is None:
+        return None
+    if force or gold_mark is None or gold_mark < silver_mark:
+        return silver_mark
+    return None
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 

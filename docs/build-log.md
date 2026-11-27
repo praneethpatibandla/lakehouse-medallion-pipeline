@@ -1166,3 +1166,105 @@ Locally nothing changes; check that everything still works with:
 pytest -q
 PYTHONPATH=src python -m lakehouse.pipeline --dry-run
 ```
+
+## 21. Gold notebook and SQL analysis queries on the gold tables
+
+**What:** Two more notebooks finish the medallion flow on Databricks.
+
+| Notebook | Does |
+|---|---|
+| `03_gold` | rebuilds the gold star schema and aggregates with `build_gold_layer` (the same function the local runner uses), runs every data quality suite, records the `gold` stage in `audit.pipeline_runs`, then shows row counts, the latest quality results and the Delta history of `fact_sales` |
+| `04_analysis` | seven SQL queries on the gold tables, each showing one technique |
+
+A new pure function, `gold_rebuild_target` in `lakehouse/pipeline.py`,
+decides whether gold needs rebuilding from the runs table alone: yes when
+the silver watermark is newer than the gold watermark (or when
+`force_rebuild` is set), and then up to which date. It is tested in
+`tests/test_pipeline.py`.
+
+The analysis queries:
+
+| # | Question | Technique |
+|---|---|---|
+| 1 | Daily revenue and its 7-day moving average | window frame `ROWS BETWEEN 6 PRECEDING AND CURRENT ROW` |
+| 2 | Revenue by category per month, share and rank | star join + `sum() OVER (PARTITION BY ...)`, `rank()` |
+| 3 | Top 10 customers by lifetime value | reading a pre-computed aggregate |
+| 4 | Revenue that would land in the wrong state without SCD2 | point-in-time join vs current version |
+| 5 | Cancellation and return rates by payment method | `count(DISTINCT CASE WHEN ...)` at the right grain |
+| 6 | Average revenue by day of week | calendar attributes from `dim_date` |
+| 7 | Repeat customers by segment | conditional averages |
+
+**Why:**
+- **Gold is its own step.** On Databricks each notebook becomes a task in
+  a job (step 22). Gold runs once after all new dates are in silver, not
+  once per date, because it is rebuilt in full from silver. That is cheap
+  at this size and always consistent: no incremental gold logic to get
+  wrong.
+- **Decide from recorded state, not from "what just ran".** The gold
+  notebook does not know what silver did a minute ago in another task. It
+  reads the watermarks from `audit.pipeline_runs`, so it gives the right
+  answer whether it runs inside a job, by hand, or after a failed attempt.
+  A failed gold run (for example a blocking quality check) is stored as
+  `failed`, does not move the gold watermark, and is retried next time even
+  if no new data arrives.
+- **Quality checks gate the "done" flag.** The checks run inside the gold
+  stage, so gold is only marked successful when its data passed. A table
+  that is wrong but marked done is worse than a run that is visibly failed.
+- **Aggregates for dashboards, the star schema for questions.** Queries 1, 3,
+  6 and 7 read small pre-computed tables; queries 2, 4 and 5 need the detail
+  of the fact table. Knowing which to use is a common interview topic.
+- **Grain discipline.** `fact_sales` has one row per order *line*. Counting
+  orders with `count(*)` would count an order once per line, so query 5
+  uses `count(DISTINCT order_id)`. Always ask "what does one row mean?"
+  before aggregating.
+- **SCD Type 2 pays off in query 4.** Each sale points at the customer
+  version valid on the order date. Joining on the current version instead
+  would move past revenue to the customer's new state. Query 4 shows
+  exactly how much revenue would move.
+- **Parameterised SQL.** Table names are built with
+  `IDENTIFIER(:catalog || '.gold.fact_sales')`, so the same queries run
+  against any catalog (dev / prod) and the catalog name is passed as a
+  parameter, not pasted into the SQL text.
+- **Delta history.** `DESCRIBE HISTORY` lists every version of a table. Each
+  gold rebuild is one atomic overwrite, so it appears as one version, and
+  an older version can be read with time travel (`VERSION AS OF`) if a
+  rebuild ever goes wrong.
+
+**Try it on Databricks Free Edition** (I could not run Databricks or Spark
+here; please report anything that fails):
+1. In your Git folder, click the branch name at the top and **Pull** to get
+   this commit.
+2. Run `databricks/00_setup`, `01_bronze` and `02_silver` if you have not
+   yet (step 20). Then open `databricks/03_gold`, choose **Serverless**,
+   **Run all**. It prints `rebuilding gold through 2026-11-03` and shows
+   six gold tables and the quality results (every check should pass).
+3. Run `03_gold` again: it prints "Gold is up to date". Set the
+   `force_rebuild` widget to `true` and run it again to rebuild anyway; a new
+   version appears in the `DESCRIBE HISTORY` output.
+4. Open `databricks/04_analysis`, **Run all**. Under each table result
+   you can click **+ > Visualization** to turn it into a chart (a line chart
+   of query 1 works well).
+5. To see query 4 return rows, move one customer to another state and load
+   one more day. In `00_setup`, set `start_date` to the day after your last
+   one and `days` to `1`, and run the sample data cell. That cell rewrites
+   `customers.csv`, so only now add a new cell below it and run:
+   ```python
+   import csv
+   path = f"{config.landing_path}/customers/customers.csv"
+   rows = list(csv.DictReader(open(path)))
+   rows[0].update(city="Denver", state="CO")
+   with open(path, "w", newline="") as f:
+       writer = csv.DictWriter(f, fieldnames=rows[0].keys())
+       writer.writeheader()
+       writer.writerows(rows)
+   ```
+   Then run `01_bronze`, `02_silver`, `03_gold` and query 4 again. Customer
+   `C00001` gets a second version, and the orders placed before the move
+   keep the old state. (Query 4 only shows the move if that customer had
+   orders before it.)
+
+Locally nothing changes:
+```bash
+pytest -q tests/test_pipeline.py
+PYTHONPATH=src python -m lakehouse.pipeline   # still builds gold the same way
+```
