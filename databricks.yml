@@ -1,0 +1,98 @@
+# Databricks Asset Bundle: the scheduled job that runs the lakehouse notebooks.
+#
+# A bundle describes Databricks resources (here, one job) as code, next to the
+# code they run. `databricks bundle deploy` uploads the repository (notebooks
+# and src/) to the workspace and creates or updates the job to match this
+# file, so the job is versioned and reviewed like everything else.
+#
+#   databricks bundle validate     # check this file
+#   databricks bundle deploy       # upload files, create/update the job
+#   databricks bundle run lakehouse_daily
+#
+# Build log step 22 explains how to deploy it on Free Edition, with or
+# without the CLI.
+
+bundle:
+  name: lakehouse-medallion-pipeline
+
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds the raw, bronze, silver, gold, quarantine and audit schemas
+    default: workspace
+
+resources:
+  jobs:
+    lakehouse_daily:
+      name: lakehouse-medallion-daily
+      description: >
+        Loads new landing files into bronze, merges them into silver, then
+        rebuilds gold and runs the data quality checks. Each notebook only
+        processes what the watermarks in audit.pipeline_runs say is new.
+
+      # Every day at 06:00 UTC. Quartz cron: sec min hour day-of-month month day-of-week.
+      schedule:
+        quartz_cron_expression: "0 0 6 * * ?"
+        timezone_id: UTC
+        pause_status: UNPAUSED
+
+      # Two runs at once would both pick the same batch dates. The watermark
+      # logic is idempotent, but there is no reason to do the work twice.
+      max_concurrent_runs: 1
+
+      # Job parameters are passed to every task and fill the notebook widgets
+      # of the same name (defined in databricks/_common.py).
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: max_batches
+          default: ""
+
+      # No compute is configured on the tasks, so they run on serverless
+      # compute (the only kind on Free Edition).
+      tasks:
+        - task_key: bronze
+          description: Ingest every complete, new batch date into bronze
+          notebook_task:
+            notebook_path: ./databricks/01_bronze.py
+          # Retrying is safe: a batch date replaces its own bronze partition.
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          timeout_seconds: 3600
+
+        - task_key: silver
+          description: Clean, deduplicate and MERGE the same dates into silver
+          depends_on:
+            - task_key: bronze
+          notebook_task:
+            notebook_path: ./databricks/02_silver.py
+          # Safe to retry: MERGE does not duplicate rows, and the watermark only
+          # moves after a date has fully succeeded.
+          max_retries: 1
+          min_retry_interval_millis: 120000
+          timeout_seconds: 3600
+
+        - task_key: gold
+          description: Rebuild the star schema and aggregates, run data quality checks
+          depends_on:
+            - task_key: silver
+          notebook_task:
+            notebook_path: ./databricks/03_gold.py
+          # No automatic retry: if gold fails, it is usually a blocking data
+          # quality check, and running the same check on the same data again
+          # gives the same answer. The next scheduled run retries it anyway.
+          max_retries: 0
+          timeout_seconds: 3600
+
+      tags:
+        project: lakehouse-medallion-pipeline
+
+targets:
+  # Development mode prefixes the job name with "[dev <your name>]", deploys
+  # into your own user folder and PAUSES the schedule, so a deploy never starts
+  # a daily run by surprise.
+  dev:
+    mode: development
+    default: true
+    # Uncomment to let the daily schedule run in development mode too.
+    # presets:
+    #   trigger_pause_status: UNPAUSED

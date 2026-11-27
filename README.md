@@ -37,6 +37,7 @@ src/lakehouse/
   maintenance.py   OPTIMIZE / Z-ORDER / VACUUM job
 data_generator/   creates synthetic source data
 databricks/       notebooks that run the same code on Databricks
+databricks.yml    Databricks Asset Bundle: the scheduled job
 tests/            unit tests
 docs/             build log and design notes
 data/             local data, generated at runtime (not committed)
@@ -216,6 +217,23 @@ files live in the volume `/Volumes/<catalog>/raw/files/landing/`.
 Bronze and silver pick the batch dates newer than the watermark, just like the
 local runner, so running them again only processes new days. Gold rebuilds
 only when silver is ahead of it. See build log steps 20 and 21 for details.
+
+### Schedule it as a job
+
+`databricks.yml` is a Databricks Asset Bundle that defines the job
+`lakehouse-medallion-daily`: three tasks, bronze -> silver -> gold, every day
+at 06:00 UTC on serverless compute. With the
+[Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install):
+
+```bash
+databricks auth login --host <your-workspace-url>
+databricks bundle validate
+databricks bundle deploy          # uploads the code and creates the job
+databricks bundle run lakehouse_daily
+```
+
+The default `dev` target pauses the schedule; see build log step 22 to turn
+it on, or to create the same job by hand in the Jobs UI.
 
 ## Run the tests
 

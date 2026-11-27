@@ -21,3 +21,6 @@ data/*
 .idea/
 .DS_Store
 .env
+
+# Databricks bundle CLI state (created by `databricks bundle deploy`)
+.databricks/

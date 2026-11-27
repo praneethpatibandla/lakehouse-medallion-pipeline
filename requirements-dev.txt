@@ -1,3 +1,5 @@
 # Tools for development and CI, on top of the runtime dependencies.
 -r requirements.txt
 ruff==0.16.9
+# Reads databricks.yml in tests/test_databricks_job.py.
+PyYAML==6.0.2

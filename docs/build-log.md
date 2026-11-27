@@ -1268,3 +1268,112 @@ Locally nothing changes:
 pytest -q tests/test_pipeline.py
 PYTHONPATH=src python -m lakehouse.pipeline   # still builds gold the same way
 ```
+
+## 22. Databricks job definition that runs the notebooks in order on a schedule
+
+**What:** `databricks.yml` at the repository root is a Databricks Asset
+Bundle. It defines one job, `lakehouse-medallion-daily`:
+
+```
+bronze (01_bronze) --> silver (02_silver) --> gold (03_gold)
+every day 06:00 UTC, serverless, one run at a time
+```
+
+- Job **parameters** `catalog` and `max_batches` are passed to every task
+  and fill the notebook widgets with the same names.
+- **Retries:** bronze and silver retry once after 2 minutes; gold does not.
+- **Timeouts** of one hour per task, so a stuck task cannot run forever.
+- The `dev` target uses development mode: the job name gets a
+  `[dev <your name>]` prefix, files go to your own user folder, and the
+  schedule is paused until you turn it on.
+
+`.databricks/` (the CLI's local state) is ignored by git.
+`tests/test_databricks_job.py` reads the YAML and checks that the tasks
+run the notebooks in medallion order, that every notebook path exists, that
+no task asks for a cluster (Free Edition is serverless only), and that every
+job parameter matches a widget in `_common.py`. PyYAML is added to
+`requirements-dev.txt` for that test.
+
+**Why:**
+- **Orchestration as code.** A job clicked together in the UI exists only
+  in that workspace; nobody can review a change to it, and it is lost if the
+  workspace is. In the bundle, the job lives in git next to the notebooks
+  it runs, so a change to a task and a change to the code go through the
+  same commit. Asset Bundles are Databricks' standard way to do CI/CD.
+- **Dependencies, not timing.** Silver `depends_on` bronze, and gold on
+  silver. Silver starts only if bronze succeeded, and if bronze fails the
+  later tasks are skipped. Scheduling three separate jobs at 06:00, 06:20
+  and 06:40 would break the day bronze is slow.
+- **Retry only what is idempotent.** Bronze replaces its own partition and
+  silver uses MERGE, so running them twice gives the same result: a retry
+  can fix a temporary error (say, a serverless start-up hiccup). Gold
+  usually fails on a blocking data quality check, and retrying the same
+  check on the same data is pointless, so it fails fast and alerts instead.
+- **One run at a time.** Two overlapping runs would read the same
+  watermark and process the same dates. The result would still be correct
+  (everything is idempotent), but `max_concurrent_runs: 1` makes the second
+  run wait or be skipped instead of doing the work twice.
+- **The watermarks make the schedule safe.** The job does not say "process
+  yesterday". Each notebook asks the runs table what is new, so a run that
+  finds nothing new does nothing, and a run after a two-day outage catches
+  up on both days, oldest first. That is the difference between a schedule
+  and an incremental pipeline.
+- **Parameters, not copies.** Pointing the same job at another catalog is a
+  change of one variable (`--var catalog=dev_lakehouse`), not a second job.
+- **Development mode is a safety net.** Deploying from a laptop should
+  never start a production schedule by accident, so development mode pauses
+  it and namespaces the job under your name.
+- **Testing a config file.** The job itself can only run on Databricks,
+  but a wrong path or a misspelled parameter is a plain text mistake that
+  a unit test catches in milliseconds. A parameter with no matching widget
+  is especially sneaky: the notebook silently uses its default.
+
+**Try it on Databricks Free Edition** (I could not run the Databricks CLI or
+a workspace here; please report anything that fails). The notebooks from
+steps 20 and 21 must have run once (`00_setup` at least), so the schemas
+and the landing volume exist.
+
+*Option A: Databricks CLI on your laptop (recommended).*
+1. Install the CLI: on macOS `brew tap databricks/tap && brew install databricks`;
+   on Windows `winget install Databricks.DatabricksCLI`. Check with
+   `databricks -v` (use a recent version, 0.230 or newer).
+2. Copy your workspace URL from the browser (the part up to
+   `.databricks.com`) and run `databricks auth login --host <that URL>`. A
+   browser tab opens; approve, and the CLI saves a profile.
+3. In the repository folder:
+   ```bash
+   databricks bundle validate
+   databricks bundle deploy
+   databricks bundle run lakehouse_daily
+   ```
+   `run` prints a link to the run. In the workspace, **Jobs & Pipelines**
+   now lists `[dev <your name>] lakehouse-medallion-daily`; its graph shows
+   the three tasks in a row.
+4. To let the schedule run daily, uncomment the two `presets` lines at the
+   bottom of `databricks.yml` and deploy again. Free Edition has a daily
+   compute quota, so pause it again when you are not using it.
+
+*Option B: by hand in the UI (same result, but not versioned).*
+1. **Jobs & Pipelines > Create > Job**. Name it `lakehouse-medallion-daily`.
+2. First task: key `bronze`, type **Notebook**, source **Workspace**, path
+   `databricks/01_bronze` in your Git folder, compute **Serverless**.
+3. **+ Add task** twice for `silver` (`02_silver`, depends on `bronze`)
+   and `gold` (`03_gold`, depends on `silver`).
+4. In the right panel: **Job parameters** add `catalog` = `workspace` and
+   `max_batches` = empty; **Schedules & Triggers > Add trigger > Scheduled**,
+   daily; under **Advanced**, maximum concurrent runs 1.
+5. Optional: under **Job notifications** add your address for failures.
+   (Kept out of the bundle on purpose, so no address is in the repository.)
+
+*See it work incrementally:* run the job once; every task finishes quickly
+and the bronze output says "nothing new". Then generate one more day in
+`00_setup` (`start_date` = the day after your last one, `days` = `1`, run
+the sample data cell) and run the job again: bronze and silver load that
+one day and gold rebuilds through it. `audit.pipeline_runs` shows a new
+`silver` and `gold` row.
+
+Locally, check the job definition with:
+```bash
+pip install -r requirements-dev.txt
+pytest -q tests/test_databricks_job.py
+```
