@@ -45,4 +45,4 @@ Catalog volume, and tables are created as managed tables using the
 - [x] 22. Databricks job definition that runs the notebooks in order on a schedule
 
 ## Phase 7 - Wrap-up
-- [ ] 23. Architecture diagram and final README covering both local and Databricks runs
+- [x] 23. Architecture diagram and final README covering both local and Databricks runs

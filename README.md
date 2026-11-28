@@ -7,22 +7,81 @@ and **Delta Lake** using the medallion (bronze / silver / gold) architecture.
 It runs entirely on a laptop, and a later phase runs the same pipeline on
 Databricks (Free Edition) with Unity Catalog.
 
-> Work in progress. See [ROADMAP.md](ROADMAP.md) for what is done and what is next.
+Everything except the Databricks part runs locally with no cloud account,
+and the same tested code in `src/lakehouse/` runs in both places.
 
-## What it does
+## Highlights
+
+- **Medallion layers on Delta Lake:** bronze keeps data as received (plus
+  load metadata), silver cleans and merges it, gold serves a star schema
+  and aggregates.
+- **Incremental and idempotent:** a watermark table decides which batch
+  dates are new; bronze replaces its own partition and silver uses Delta
+  `MERGE`, so re-running any day never duplicates data.
+- **Realistic data problems:** the generator writes duplicates, unparseable
+  lines, bad quantities and unknown keys on purpose. Corrupt lines are
+  quarantined, and unknown customers or products map to a `-1` dimension row.
+- **History:** customers are an SCD Type 2 dimension, and every sale points
+  at the customer version valid on its order date.
+- **Data quality gates:** declarative checks (unique keys, orphan foreign
+  keys, valid amounts) stop a run before bad data reaches dashboards.
+- **Operations:** audit tables for loads, runs and check results;
+  OPTIMIZE / Z-ORDER / VACUUM maintenance; month-partitioned fact table.
+- **Tested and automated:** about 150 tests (pure Python and local Spark),
+  ruff lint and GitHub Actions CI.
+- **Databricks Free Edition:** notebooks on serverless compute with Unity
+  Catalog managed tables and volumes, scheduled by an Asset Bundle job.
+
+## Architecture
 
 ```
-raw CSV / JSON files
-        |
-        v
-  BRONZE  raw data as received, plus load metadata
-        |
-        v
-  SILVER  cleaned, deduplicated, incrementally merged
-        |
-        v
-  GOLD    star schema and aggregates ready for analytics
+                 data_generator (synthetic CSV / JSON, one folder per day)
+                                   |
+                                   v
+ LANDING   files      data/landing/  or  /Volumes/<catalog>/raw/files/landing/
+                                   |
+                                   v                      corrupt lines
+ BRONZE    customers  products  orders  order_items  ----------------> QUARANTINE
+           raw rows + _source_file, _ingested_at, _batch_date, _run_id
+                                   |
+                                   v
+ SILVER    customers (SCD2)  products  orders (dedup + MERGE)  order_items
+                                   |
+                                   v
+ GOLD      dim_date  dim_customer  dim_product  --->  fact_sales
+                                                       |
+                                     agg_daily_sales   agg_customer_lifetime_value
+
+ AUDIT     ingestion_log   pipeline_runs (watermarks)   dq_results
 ```
+
+| | Local | Databricks Free Edition |
+|---|---|---|
+| Compute | local Spark 3.5 + delta-spark | serverless |
+| Tables | Delta folders under `data/` | Unity Catalog managed tables `<catalog>.<layer>.<table>` |
+| Source files | `data/landing/` | volume `/Volumes/<catalog>/raw/files/landing/` |
+| Orchestration | `python -m lakehouse.pipeline` | job `lakehouse-medallion-daily` (`databricks.yml`) |
+
+[docs/architecture.md](docs/architecture.md) has the full diagrams (data
+flow, run control flow, local vs Databricks) and a reference of every
+table with its grain and load pattern. [docs/build-log.md](docs/build-log.md)
+explains, step by step, why each part is built the way it is.
+
+## Tech stack
+
+Python 3.10+, PySpark 3.5, Delta Lake 3.2, pytest, ruff, GitHub Actions,
+Databricks (serverless, Unity Catalog, Asset Bundles), SQL.
+
+## Quick start (local)
+
+```bash
+pip install -r requirements.txt
+PYTHONPATH=src python -m data_generator.reference_data --customers 500 --products 100
+PYTHONPATH=src python -m data_generator.orders --start-date 2026-11-01 --days 3 --orders-per-day 200
+PYTHONPATH=src python -m lakehouse.pipeline
+```
+
+The sections below explain each step in detail.
 
 ## Project layout
 
@@ -39,7 +98,7 @@ data_generator/   creates synthetic source data
 databricks/       notebooks that run the same code on Databricks
 databricks.yml    Databricks Asset Bundle: the scheduled job
 tests/            unit tests
-docs/             build log and design notes
+docs/             architecture diagrams and build log
 data/             local data, generated at runtime (not committed)
 ```
 
@@ -257,3 +316,12 @@ ruff check .
 GitHub Actions (`.github/workflows/ci.yml`) runs the lint and the full test
 suite, Spark tests included, on every push and pull request. In CI a Spark
 test that cannot start fails the build instead of being skipped.
+
+## Possible next steps
+
+Ideas that would come next in a real team, not built here:
+
+- Read sources with Auto Loader (`cloudFiles`) instead of batch-date folders.
+- Move the gold rebuild to incremental MERGE once fact_sales grows large.
+- Publish gold tables to a BI tool (Databricks SQL dashboard or Power BI).
+- Separate `dev` and `prod` catalogs with the bundle's targets.

@@ -1377,3 +1377,63 @@ Locally, check the job definition with:
 pip install -r requirements-dev.txt
 pytest -q tests/test_databricks_job.py
 ```
+
+## 23. Architecture diagram and final README covering both local and Databricks runs
+
+**What:** The project is complete, so the documentation now describes a
+finished system instead of a work in progress.
+
+- `docs/architecture.md` (new) has three Mermaid diagrams, which GitHub
+  draws directly on the page:
+  1. **Data flow:** every source file, every table in each layer, and the
+     transforms between them, including the quarantine path.
+  2. **Control flow:** what one run of the pipeline does with the
+     watermarks, and where it writes to `audit.pipeline_runs`.
+  3. **Local vs Databricks:** one code base, two ways to run it, and the
+     one setting (`PipelineConfig.catalog`) that switches between them.
+
+  It also has a table reference: grain and load pattern of every table.
+- `README.md` now opens with highlights, a text architecture diagram, a
+  local-vs-Databricks comparison, the tech stack and a four-command quick
+  start. The detailed sections for each step are unchanged below that, and
+  a short "possible next steps" list closes it.
+- `tests/test_docs.py` (new) checks that every relative link in the
+  Markdown files points at a file that exists, that `architecture.md`
+  mentions every table the pipeline writes (taken from the maintenance
+  table list, so a new table without docs fails the test), and that every
+  ticked roadmap step has a build log entry.
+
+**Why:**
+- **A reviewer reads the README for two minutes.** A recruiter or
+  interviewer will not run the code. The top of the README has to say what
+  the project shows (incremental loads, MERGE, SCD2, data quality, CI,
+  Databricks) before the reader scrolls. The how-to stays below for anyone
+  who does run it.
+- **Grain is the first question about any table.** "One row per what?" is
+  what an analyst, a reviewer and an interviewer all ask first. Writing the
+  grain and the load pattern (append, partition replace, MERGE, full
+  rebuild) next to every table is the shortest description of a data
+  model, and a good thing to be able to recite in an interview.
+- **Diagrams as code.** A Mermaid diagram is text in git: it is reviewed
+  in the same commit as the change it describes, and nobody needs the
+  original drawing tool to update it. An exported PNG goes stale the first
+  time a table is added. The README keeps a plain-text version too, which
+  reads fine in a terminal or an editor.
+- **Separate what is shared from what differs.** The local-vs-Databricks
+  table makes the design point of steps 20 to 22 visible: the transforms
+  are identical, and only storage addresses, compute and orchestration
+  change. That is how real teams keep one code base across dev laptops and
+  production clusters.
+- **Tests for documentation.** Broken links and undocumented tables are
+  the usual way docs rot. Checking them in CI costs nothing and turns
+  "please remember to update the docs" into a failing build.
+
+**Try it:**
+```bash
+pytest -q tests/test_docs.py
+```
+Then open the repository on GitHub and view `docs/architecture.md`: the
+diagrams are rendered on the page. (I could check the Mermaid syntax only
+by reading it here; if a diagram shows an error box on GitHub, the message
+names the line.) In VS Code the "Markdown Preview Mermaid Support"
+extension shows them locally.
